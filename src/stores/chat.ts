@@ -30,6 +30,43 @@ const starterSession: ChatSession = {
   updatedAt: Date.now(),
 }
 
+const sampleSessions: ChatSession[] = [
+  {
+    id: 'session-interview',
+    title: '前端面试复习计划',
+    messages: [
+      {
+        ...welcomeMessage,
+        id: 'welcome-interview',
+      },
+      {
+        id: 'interview-user',
+        role: 'user',
+        content: '帮我整理一份前端面试复习计划，重点放在组件、状态管理和工程化。',
+        createdAt: Date.now() - 1000 * 60 * 40,
+      },
+    ],
+    updatedAt: Date.now() - 1000 * 60 * 35,
+  },
+  {
+    id: 'session-resume',
+    title: '简历项目经历润色',
+    messages: [
+      {
+        ...welcomeMessage,
+        id: 'welcome-resume',
+      },
+      {
+        id: 'resume-user',
+        role: 'user',
+        content: '帮我把 AI Chat 这个项目写成简历里的项目经历。',
+        createdAt: Date.now() - 1000 * 60 * 80,
+      },
+    ],
+    updatedAt: Date.now() - 1000 * 60 * 74,
+  },
+]
+
 const createId = () => crypto.randomUUID()
 
 const summarizeTitle = (content: string) => {
@@ -37,9 +74,11 @@ const summarizeTitle = (content: string) => {
   return normalized.length > 18 ? `${normalized.slice(0, 18)}...` : normalized || '新的对话'
 }
 
+let responseTimer: ReturnType<typeof window.setTimeout> | null = null
+
 export const useChatStore = defineStore('chat', {
   state: () => ({
-    sessions: [starterSession] as ChatSession[],
+    sessions: [starterSession, ...sampleSessions] as ChatSession[],
     activeSessionId: starterSession.id,
     isResponding: false,
   }),
@@ -64,13 +103,35 @@ export const useChatStore = defineStore('chat', {
 
       this.sessions.unshift(session)
       this.activeSessionId = session.id
+      return session.id
     },
     switchSession(sessionId: string) {
       this.activeSessionId = sessionId
     },
+    renameSession(sessionId: string, title: string) {
+      const session = this.sessions.find((item) => item.id === sessionId)
+      const normalized = title.trim()
+      if (!session || !normalized) return
+
+      session.title = normalized
+      session.updatedAt = Date.now()
+    },
+    deleteSession(sessionId: string) {
+      if (this.sessions.length <= 1) return
+
+      const index = this.sessions.findIndex((session) => session.id === sessionId)
+      if (index === -1) return
+
+      this.sessions.splice(index, 1)
+      if (this.activeSessionId === sessionId) {
+        this.activeSessionId = this.sessions[0]?.id ?? ''
+      }
+    },
     clearActiveSession() {
       const session = this.activeSession
       if (!session) return
+
+      this.stopResponding()
 
       const now = Date.now()
       session.title = '新的对话'
@@ -104,7 +165,14 @@ export const useChatStore = defineStore('chat', {
       session.updatedAt = now
       this.isResponding = true
 
-      await new Promise((resolve) => window.setTimeout(resolve, 650))
+      await new Promise<void>((resolve) => {
+        responseTimer = window.setTimeout(() => {
+          responseTimer = null
+          resolve()
+        }, 900)
+      })
+
+      if (!this.isResponding) return
 
       session.messages.push({
         id: createId(),
@@ -113,6 +181,14 @@ export const useChatStore = defineStore('chat', {
         createdAt: Date.now(),
       })
       session.updatedAt = Date.now()
+      this.isResponding = false
+    },
+    stopResponding() {
+      if (responseTimer) {
+        window.clearTimeout(responseTimer)
+        responseTimer = null
+      }
+
       this.isResponding = false
     },
     composeAssistantReply(content: string) {
