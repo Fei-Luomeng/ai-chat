@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ArrowDown,
   ArrowRight,
@@ -20,7 +20,7 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
-import { useChatStore, type ChatSession } from '@/stores/chat'
+import { useChatStore, type ChatMessage, type ChatSession } from '@/stores/chat'
 
 const chatStore = useChatStore()
 const draft = ref('')
@@ -29,29 +29,108 @@ const isSidebarCollapsed = ref(false)
 const isSearchOpen = ref(false)
 const searchText = ref('')
 const isProjectsOpen = ref(true)
+const isRecentOpen = ref(true)
 const isSettingsOpen = ref(false)
 const activeProject = ref('')
 const currentMode = ref<'chat' | 'project'>('chat')
 const isProjectHome = ref(false)
+const isPendingNewSession = ref(false)
+const isPendingProjectSession = ref(false)
+const activeProjectSessionId = ref('')
+const isProjectResponding = ref(false)
 const openActionMenu = ref('')
-const projectSessionIds = ref<Record<string, string[]>>({
-  'AI Chat 工作台': ['session-1', 'session-interview', 'session-resume'],
-  面试题整理: ['session-interview'],
-  简历优化: ['session-resume'],
+const actionMenuStyle = ref<Record<string, string>>({})
+const actionDialog = ref<
+  | { type: 'rename-project'; projectName: string; value: string }
+  | { type: 'delete-project'; projectName: string; value: string }
+  | { type: 'rename-session'; sessionId: string; value: string }
+  | { type: 'delete-session'; sessionId: string; value: string }
+  | null
+>(null)
+const projectSessions = ref<Record<string, ChatSession[]>>({
+  'AI Chat 工作台': [
+    {
+      id: 'project-ai-plan',
+      title: '项目接口设计',
+      messages: [
+        {
+          id: 'project-ai-welcome',
+          role: 'assistant',
+          content: '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。',
+          createdAt: Date.now() - 1000 * 60 * 120,
+        },
+        {
+          id: 'project-ai-user',
+          role: 'user',
+          content: '帮我规划一下这个 AI Chat 项目的接口和状态结构。',
+          createdAt: Date.now() - 1000 * 60 * 118,
+        },
+      ],
+      updatedAt: Date.now() - 1000 * 60 * 110,
+    },
+  ],
+  面试题整理: [
+    {
+      id: 'project-interview-plan',
+      title: '项目内复习安排',
+      messages: [
+        {
+          id: 'project-interview-welcome',
+          role: 'assistant',
+          content: '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。',
+          createdAt: Date.now() - 1000 * 60 * 90,
+        },
+        {
+          id: 'project-interview-user',
+          role: 'user',
+          content: '这个项目里单独整理一份面试题复习顺序。',
+          createdAt: Date.now() - 1000 * 60 * 88,
+        },
+      ],
+      updatedAt: Date.now() - 1000 * 60 * 80,
+    },
+  ],
+  简历优化: [],
 })
 const profileName = ref('Feather Mask')
 const profileAvatar = ref('FM')
 const draftProfileName = ref(profileName.value)
-const profileBio = ref('前端学习中')
-const profileEmail = ref('feather@example.com')
 const avatarImage = ref('')
 const themeMode = ref<'light' | 'dark'>('light')
 const draftThemeMode = ref<'light' | 'dark'>(themeMode.value)
+let projectResponseTimer: ReturnType<typeof window.setTimeout> | null = null
 
-const activeSession = computed(() => chatStore.activeSession)
+const createId = () => crypto.randomUUID()
+const welcomeContent = '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。'
+
+const createWelcomeMessage = (): ChatMessage => ({
+  id: createId(),
+  role: 'assistant',
+  content: welcomeContent,
+  createdAt: Date.now(),
+})
+
+const summarizeTitle = (content: string) => {
+  const normalized = content.trim().replace(/\s+/g, ' ')
+  return normalized.length > 18 ? `${normalized.slice(0, 18)}...` : normalized || '新的对话'
+}
+
+const activeProjectSession = computed(() => {
+  if (!activeProject.value || !activeProjectSessionId.value) return undefined
+  return projectSessions.value[activeProject.value]?.find((session) => session.id === activeProjectSessionId.value)
+})
+
+const activeSession = computed(() => activeProjectSession.value ?? chatStore.activeSession)
 const hasDraft = computed(() => draft.value.trim().length > 0)
-const isFreshSession = computed(() => (activeSession.value?.messages.length ?? 0) <= 1)
+const isFreshSession = computed(
+  () => isPendingNewSession.value || isPendingProjectSession.value || (activeSession.value?.messages.length ?? 0) <= 1,
+)
 const isProjectMode = computed(() => currentMode.value === 'project' && Boolean(activeProject.value))
+const isResponding = computed(() => chatStore.isResponding || isProjectResponding.value)
+const headerSessionTitle = computed(() => {
+  if (isPendingNewSession.value || isPendingProjectSession.value) return '新的对话'
+  return activeSession.value?.title
+})
 
 const projects = ref(['AI Chat 工作台', '面试题整理', '简历优化'])
 
@@ -80,8 +159,7 @@ const hasSearchQuery = computed(() => searchText.value.trim().length > 0)
 const activeProjectSessions = computed(() => {
   if (!activeProject.value) return []
 
-  const ids = projectSessionIds.value[activeProject.value] ?? []
-  return chatStore.sessions.filter((session) => ids.includes(session.id))
+  return projectSessions.value[activeProject.value] ?? []
 })
 
 const savedAvatarDisplay = computed(() => profileAvatar.value.trim().slice(0, 2).toUpperCase() || 'U')
@@ -99,11 +177,90 @@ watch(
   },
 )
 
+const createProjectSession = (projectName: string) => {
+  const now = Date.now()
+  const session: ChatSession = {
+    id: `project-${createId()}`,
+    title: '新的对话',
+    messages: [
+      {
+        ...createWelcomeMessage(),
+        createdAt: now,
+      },
+    ],
+    updatedAt: now,
+  }
+
+  projectSessions.value = {
+    ...projectSessions.value,
+    [projectName]: [session, ...(projectSessions.value[projectName] ?? [])],
+  }
+  activeProjectSessionId.value = session.id
+  return session
+}
+
+const sendProjectContent = async (content: string) => {
+  const session = activeProjectSession.value
+  const trimmedContent = content.trim()
+  if (!session || !trimmedContent || isProjectResponding.value) return
+
+  const now = Date.now()
+  session.messages.push({
+    id: createId(),
+    role: 'user',
+    content: trimmedContent,
+    createdAt: now,
+  })
+
+  if (session.messages.length === 2) {
+    session.title = summarizeTitle(trimmedContent)
+  }
+
+  session.updatedAt = now
+  isProjectResponding.value = true
+
+  await new Promise<void>((resolve) => {
+    projectResponseTimer = window.setTimeout(() => {
+      projectResponseTimer = null
+      resolve()
+    }, 900)
+  })
+
+  if (!isProjectResponding.value) return
+
+  session.messages.push({
+    id: createId(),
+    role: 'assistant',
+    content: chatStore.composeAssistantReply(trimmedContent),
+    createdAt: Date.now(),
+  })
+  session.updatedAt = Date.now()
+  isProjectResponding.value = false
+}
+
 const send = async () => {
   if (!hasDraft.value) return
 
   const content = draft.value
   draft.value = ''
+
+  if (isPendingNewSession.value) {
+    chatStore.createSession()
+    isPendingNewSession.value = false
+  }
+
+  if (isPendingProjectSession.value && activeProject.value) {
+    createProjectSession(activeProject.value)
+    isPendingProjectSession.value = false
+    await sendProjectContent(content)
+    return
+  }
+
+  if (activeProjectSession.value) {
+    await sendProjectContent(content)
+    return
+  }
+
   await chatStore.sendMessage(content)
 }
 
@@ -112,12 +269,29 @@ const usePrompt = (prompt: string) => {
 }
 
 const clearChat = () => {
-  chatStore.clearActiveSession()
+  if (activeProjectSession.value) {
+    const now = Date.now()
+    activeProjectSession.value.title = '新的对话'
+    activeProjectSession.value.messages = [
+      {
+        ...createWelcomeMessage(),
+        createdAt: now,
+      },
+    ]
+    activeProjectSession.value.updatedAt = now
+  } else {
+    chatStore.clearActiveSession()
+  }
   ElMessage.success('已清空当前会话')
 }
 
 const stopResponding = () => {
   chatStore.stopResponding()
+  if (projectResponseTimer) {
+    window.clearTimeout(projectResponseTimer)
+    projectResponseTimer = null
+  }
+  isProjectResponding.value = false
   ElMessage.info('已终止生成')
 }
 
@@ -135,6 +309,12 @@ const closeSearch = () => {
 const switchFromSearch = (session: ChatSession) => {
   chatStore.stopResponding()
   chatStore.switchSession(session.id)
+  currentMode.value = 'chat'
+  activeProject.value = ''
+  activeProjectSessionId.value = ''
+  isProjectHome.value = false
+  isPendingNewSession.value = false
+  isPendingProjectSession.value = false
   closeSearch()
   void scrollToBottom()
 }
@@ -172,11 +352,14 @@ const highlightParts = (content: string) => {
 }
 
 const createSession = () => {
-  chatStore.createSession()
+  chatStore.stopResponding()
   draft.value = ''
   currentMode.value = 'chat'
   activeProject.value = ''
+  activeProjectSessionId.value = ''
   isProjectHome.value = false
+  isPendingNewSession.value = true
+  isPendingProjectSession.value = false
   openActionMenu.value = ''
 }
 
@@ -184,108 +367,164 @@ const selectProject = (projectName: string) => {
   activeProject.value = projectName
   currentMode.value = 'project'
   isProjectHome.value = true
+  activeProjectSessionId.value = ''
+  isPendingNewSession.value = false
+  isPendingProjectSession.value = false
   isProjectsOpen.value = true
   openActionMenu.value = ''
 }
 
 const switchProjectSession = (sessionId: string) => {
-  chatStore.switchSession(sessionId)
+  activeProjectSessionId.value = sessionId
   currentMode.value = 'project'
   isProjectHome.value = false
+  isPendingNewSession.value = false
+  isPendingProjectSession.value = false
   openActionMenu.value = ''
   void scrollToBottom()
-}
-
-const createProjectSession = () => {
-  if (!activeProject.value) return
-
-  const sessionId = chatStore.createSession()
-  projectSessionIds.value = {
-    ...projectSessionIds.value,
-    [activeProject.value]: [sessionId, ...(projectSessionIds.value[activeProject.value] ?? [])],
-  }
-  currentMode.value = 'project'
-  isProjectHome.value = false
-  draft.value = ''
 }
 
 const sendProjectMessage = async () => {
   if (!activeProject.value) return
 
   const content = draft.value.trim()
-  const sessionId = chatStore.createSession()
-  projectSessionIds.value = {
-    ...projectSessionIds.value,
-    [activeProject.value]: [sessionId, ...(projectSessionIds.value[activeProject.value] ?? [])],
-  }
+  if (!content) return
+
+  createProjectSession(activeProject.value)
   currentMode.value = 'project'
   isProjectHome.value = false
+  isPendingNewSession.value = false
+  isPendingProjectSession.value = false
 
-  if (content) {
-    draft.value = ''
-    await chatStore.sendMessage(content)
-  }
+  draft.value = ''
+  await sendProjectContent(content)
 }
 
-const toggleActionMenu = (menuId: string) => {
-  openActionMenu.value = openActionMenu.value === menuId ? '' : menuId
+const toggleActionMenu = (menuId: string, event?: MouseEvent) => {
+  if (openActionMenu.value === menuId) {
+    openActionMenu.value = ''
+    return
+  }
+
+  openActionMenu.value = menuId
+  const target = event?.currentTarget as HTMLElement | undefined
+  const rect = target?.getBoundingClientRect()
+  if (rect) {
+    actionMenuStyle.value = {
+      left: `${rect.right + 18}px`,
+      top: `${rect.bottom + 8}px`,
+    }
+  }
 }
 
 const renameProject = (projectName: string) => {
-  const nextName = window.prompt('重命名项目', projectName)?.trim()
+  actionDialog.value = { type: 'rename-project', projectName, value: projectName }
+  openActionMenu.value = ''
+}
+
+const applyRenameProject = (projectName: string, name: string) => {
+  const nextName = name.trim()
   if (!nextName || nextName === projectName) return
 
   projects.value = projects.value.map((item) => (item === projectName ? nextName : item))
-  projectSessionIds.value = {
-    ...projectSessionIds.value,
-    [nextName]: projectSessionIds.value[projectName] ?? [],
+  projectSessions.value = {
+    ...projectSessions.value,
+    [nextName]: projectSessions.value[projectName] ?? [],
   }
-  delete projectSessionIds.value[projectName]
+  delete projectSessions.value[projectName]
 
   if (activeProject.value === projectName) {
     activeProject.value = nextName
   }
-  openActionMenu.value = ''
 }
 
 const deleteProject = (projectName: string) => {
-  if (!window.confirm(`删除项目「${projectName}」？项目中的对话会回到最近对话。`)) return
-
-  projects.value = projects.value.filter((item) => item !== projectName)
-  delete projectSessionIds.value[projectName]
-  if (activeProject.value === projectName) {
-    activeProject.value = ''
-    currentMode.value = 'chat'
-    isProjectHome.value = false
-  }
+  actionDialog.value = { type: 'delete-project', projectName, value: projectName }
   openActionMenu.value = ''
 }
 
-const renameSession = (session: ChatSession) => {
-  const nextTitle = window.prompt('重命名对话', session.title)?.trim()
-  if (!nextTitle || nextTitle === session.title) return
+const applyDeleteProject = (projectName: string) => {
+  projects.value = projects.value.filter((item) => item !== projectName)
+  delete projectSessions.value[projectName]
+  if (activeProject.value === projectName) {
+    activeProject.value = ''
+    activeProjectSessionId.value = ''
+    currentMode.value = 'chat'
+    isProjectHome.value = false
+    isPendingProjectSession.value = false
+  }
+  ElMessage.success('项目已删除')
+}
 
-  chatStore.renameSession(session.id, nextTitle)
+const findProjectSession = (sessionId: string) => {
+  for (const projectName of Object.keys(projectSessions.value)) {
+    const session = projectSessions.value[projectName].find((item) => item.id === sessionId)
+    if (session) return { projectName, session }
+  }
+  return undefined
+}
+
+const renameSession = (session: ChatSession) => {
+  actionDialog.value = { type: 'rename-session', sessionId: session.id, value: session.title }
   openActionMenu.value = ''
 }
 
 const deleteSession = (sessionId: string) => {
-  if (!window.confirm('删除这个对话？')) return
-
-  chatStore.deleteSession(sessionId)
-  Object.keys(projectSessionIds.value).forEach((projectName) => {
-    projectSessionIds.value[projectName] = projectSessionIds.value[projectName].filter((id) => id !== sessionId)
-  })
+  const session = chatStore.sessions.find((item) => item.id === sessionId) ?? findProjectSession(sessionId)?.session
+  actionDialog.value = { type: 'delete-session', sessionId, value: session?.title ?? '这个对话' }
   openActionMenu.value = ''
 }
 
-const moveSessionToProject = (sessionId: string, projectName: string) => {
-  projectSessionIds.value = {
-    ...projectSessionIds.value,
-    [projectName]: Array.from(new Set([sessionId, ...(projectSessionIds.value[projectName] ?? [])])),
+const applyDeleteSession = (sessionId: string) => {
+  const projectMatch = findProjectSession(sessionId)
+  if (projectMatch) {
+    projectSessions.value[projectMatch.projectName] = projectSessions.value[projectMatch.projectName].filter(
+      (session) => session.id !== sessionId,
+    )
+    if (activeProjectSessionId.value === sessionId) {
+      activeProjectSessionId.value = ''
+      isProjectHome.value = true
+    }
+  } else {
+    chatStore.deleteSession(sessionId)
   }
-  ElMessage.success(`已移动到「${projectName}」`)
-  openActionMenu.value = ''
+  ElMessage.success('对话已删除')
+}
+
+const closeActionDialog = () => {
+  actionDialog.value = null
+}
+
+const confirmActionDialog = () => {
+  const dialog = actionDialog.value
+  if (!dialog) return
+
+  if (dialog.type === 'rename-project') {
+    applyRenameProject(dialog.projectName, dialog.value)
+  }
+
+  if (dialog.type === 'delete-project') {
+    applyDeleteProject(dialog.projectName)
+  }
+
+  if (dialog.type === 'rename-session') {
+    const projectMatch = findProjectSession(dialog.sessionId)
+    if (projectMatch) {
+      const normalized = dialog.value.trim()
+      if (normalized) {
+        projectMatch.session.title = normalized
+        projectMatch.session.updatedAt = Date.now()
+      }
+    } else {
+      chatStore.renameSession(dialog.sessionId, dialog.value)
+    }
+  }
+
+  if (dialog.type === 'delete-session') {
+    applyDeleteSession(dialog.sessionId)
+  }
+
+  actionDialog.value = null
 }
 
 const handleAvatarUpload = (event: Event) => {
@@ -308,6 +547,36 @@ const closeSettings = () => {
   draftThemeMode.value = themeMode.value
   isSettingsOpen.value = false
 }
+
+const handleGlobalPointerDown = (event: PointerEvent) => {
+  const target = event.target as HTMLElement | null
+  if (!target) return
+
+  if (actionDialog.value && !target.closest('.confirm-dialog')) {
+    actionDialog.value = null
+  }
+
+  if (isSettingsOpen.value && !target.closest('.settings-dialog')) {
+    closeSettings()
+  }
+
+  if (
+    openActionMenu.value &&
+    !target.closest('.action-menu') &&
+    !target.closest('.row-action') &&
+    !target.closest('.project-chat-row > button')
+  ) {
+    openActionMenu.value = ''
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', handleGlobalPointerDown, true)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', handleGlobalPointerDown, true)
+})
 
 const formatTime = (timestamp: number) =>
   new Intl.DateTimeFormat('zh-CN', {
@@ -362,44 +631,51 @@ const formatTime = (timestamp: number) =>
                 <component :is="project === activeProject ? FolderOpened : Folder" :size="16" />
                 <span>{{ project }}</span>
               </button>
-              <button class="row-action" type="button" aria-label="项目操作" @click.stop="toggleActionMenu(`project-${project}`)">
+              <button class="row-action" type="button" aria-label="项目操作" @click.stop="toggleActionMenu(`project-${project}`, $event)">
                 <MoreFilled :size="15" />
               </button>
-              <div v-if="openActionMenu === `project-${project}`" class="action-menu">
-                <button type="button" @click="renameProject(project)">重命名</button>
-                <button type="button" class="danger" @click="deleteProject(project)">删除</button>
+              <div v-if="openActionMenu === `project-${project}`" class="action-menu" :style="actionMenuStyle">
+                <button type="button" @click="renameProject(project)">
+                  <EditPen :size="16" />
+                  <span>重命名项目</span>
+                </button>
+                <button type="button" class="danger" @click="deleteProject(project)">
+                  <Delete :size="16" />
+                  <span>删除项目</span>
+                </button>
               </div>
             </div>
           </div>
         </section>
 
-        <section class="sidebar-section">
-          <h2>最近的对话</h2>
+        <section class="sidebar-section recent-section" :class="{ closed: !isRecentOpen }">
+          <button class="section-toggle" type="button" @click="isRecentOpen = !isRecentOpen">
+            <component :is="isRecentOpen ? ArrowDown : ArrowRight" :size="14" />
+            <span>最近的对话</span>
+          </button>
           <div class="session-list">
             <div v-for="session in chatStore.sessions" :key="session.id" class="nav-row-wrap">
               <button
                 class="session-item"
-                :class="{ active: session.id === chatStore.activeSessionId && !isProjectHome }"
+                :class="{ active: session.id === chatStore.activeSessionId && !isProjectHome && !isPendingNewSession && !isPendingProjectSession }"
                 type="button"
-                @click="chatStore.switchSession(session.id); currentMode = 'chat'; isProjectHome = false; activeProject = ''"
+                @click="chatStore.switchSession(session.id); currentMode = 'chat'; isProjectHome = false; activeProject = ''; activeProjectSessionId = ''; isPendingNewSession = false; isPendingProjectSession = false"
               >
                 <EditPen :size="16" />
                 <span>{{ session.title }}</span>
               </button>
-              <button class="row-action" type="button" aria-label="对话操作" @click.stop="toggleActionMenu(`session-${session.id}`)">
+              <button class="row-action" type="button" aria-label="对话操作" @click.stop="toggleActionMenu(`session-${session.id}`, $event)">
                 <MoreFilled :size="15" />
               </button>
-              <div v-if="openActionMenu === `session-${session.id}`" class="action-menu">
-                <button type="button" @click="renameSession(session)">重命名</button>
-                <button
-                  v-for="project in projects"
-                  :key="`${session.id}-${project}`"
-                  type="button"
-                  @click="moveSessionToProject(session.id, project)"
-                >
-                  移动到 {{ project }}
+              <div v-if="openActionMenu === `session-${session.id}`" class="action-menu" :style="actionMenuStyle">
+                <button type="button" @click="renameSession(session)">
+                  <EditPen :size="16" />
+                  <span>重命名对话</span>
                 </button>
-                <button type="button" class="danger" @click="deleteSession(session.id)">删除</button>
+                <button type="button" class="danger" @click="deleteSession(session.id)">
+                  <Delete :size="16" />
+                  <span>删除对话</span>
+                </button>
               </div>
             </div>
           </div>
@@ -427,10 +703,10 @@ const formatTime = (timestamp: number) =>
         </button>
         <button class="model-button" type="button">
           <span>{{ isProjectMode ? '项目' : 'AI Chat' }}</span>
-          <strong>{{ isProjectMode ? activeProject : activeSession?.title }}</strong>
+          <strong>{{ isProjectMode ? activeProject : headerSessionTitle }}</strong>
         </button>
         <div class="header-actions">
-          <el-tooltip v-if="chatStore.isResponding" content="终止生成" placement="bottom">
+          <el-tooltip v-if="isResponding" content="终止生成" placement="bottom">
             <el-button class="stop-button" :icon="CircleCloseFilled" circle @click="stopResponding" />
           </el-tooltip>
           <el-tooltip content="清空当前会话" placement="bottom">
@@ -448,9 +724,6 @@ const formatTime = (timestamp: number) =>
             </div>
 
             <div class="project-hero-composer">
-              <button type="button" class="project-plus" @click="createProjectSession">
-                <Plus :size="24" />
-              </button>
               <el-input
                 v-model="draft"
                 type="textarea"
@@ -466,7 +739,6 @@ const formatTime = (timestamp: number) =>
 
             <div class="project-tabs">
               <button class="active" type="button">聊天</button>
-              <button type="button">来源</button>
             </div>
 
             <div class="project-chat-list">
@@ -481,12 +753,18 @@ const formatTime = (timestamp: number) =>
                   <p>{{ getResultPreview(session) }}</p>
                 </div>
                 <time>{{ formatTime(session.updatedAt) }}</time>
-                <button type="button" aria-label="对话操作" @click.stop="toggleActionMenu(`home-session-${session.id}`)">
+                <button type="button" aria-label="对话操作" @click.stop="toggleActionMenu(`home-session-${session.id}`, $event)">
                   <MoreFilled :size="17" />
                 </button>
-                <div v-if="openActionMenu === `home-session-${session.id}`" class="action-menu home-menu">
-                  <button type="button" @click.stop="renameSession(session)">重命名</button>
-                  <button type="button" class="danger" @click.stop="deleteSession(session.id)">删除</button>
+                <div v-if="openActionMenu === `home-session-${session.id}`" class="action-menu home-menu" :style="actionMenuStyle">
+                  <button type="button" @click.stop="renameSession(session)">
+                    <EditPen :size="16" />
+                    <span>重命名对话</span>
+                  </button>
+                  <button type="button" class="danger" @click.stop="deleteSession(session.id)">
+                    <Delete :size="16" />
+                    <span>删除对话</span>
+                  </button>
                 </div>
               </article>
               <p v-if="activeProjectSessions.length === 0" class="project-empty">这个项目还没有对话</p>
@@ -513,7 +791,7 @@ const formatTime = (timestamp: number) =>
                 @keydown.enter.exact.prevent="send"
               />
               <el-button
-                v-if="chatStore.isResponding"
+                v-if="isResponding"
                 class="composer-stop"
                 :icon="CircleCloseFilled"
                 circle
@@ -555,7 +833,7 @@ const formatTime = (timestamp: number) =>
             </div>
           </article>
 
-          <article v-if="chatStore.isResponding" class="message-row assistant">
+          <article v-if="isResponding" class="message-row assistant">
             <div class="avatar">AI</div>
             <div class="message-content">
               <div class="message-meta">
@@ -588,7 +866,7 @@ const formatTime = (timestamp: number) =>
               @keydown.enter.exact.prevent="send"
             />
             <el-button
-              v-if="chatStore.isResponding"
+              v-if="isResponding"
               class="composer-stop"
               :icon="CircleCloseFilled"
               circle
@@ -650,8 +928,8 @@ const formatTime = (timestamp: number) =>
       </div>
     </div>
 
-    <div v-if="isSettingsOpen" class="settings-overlay" @click.self="closeSettings">
-      <section class="settings-dialog">
+    <div v-if="isSettingsOpen" class="settings-overlay" @click="closeSettings">
+      <section class="settings-dialog" @click.stop>
         <header>
           <div>
             <p>个人设置</p>
@@ -676,14 +954,6 @@ const formatTime = (timestamp: number) =>
             <span>用户名</span>
             <input v-model="draftProfileName" placeholder="输入用户名" />
           </label>
-          <label>
-            <span>邮箱</span>
-            <input v-model="profileEmail" placeholder="name@example.com" />
-          </label>
-          <label>
-            <span>简介</span>
-            <input v-model="profileBio" placeholder="一句话介绍自己" />
-          </label>
           <div class="theme-switch">
             <button type="button" :class="{ active: draftThemeMode === 'light' }" @click="draftThemeMode = 'light'">
               <Sunny :size="15" />
@@ -698,6 +968,40 @@ const formatTime = (timestamp: number) =>
         <footer>
           <button class="cancel-settings" type="button" @click="closeSettings">取消</button>
           <button class="save-settings" type="button" @click="saveSettings">保存设置</button>
+        </footer>
+      </section>
+    </div>
+
+    <div v-if="actionDialog" class="confirm-overlay" @click="closeActionDialog">
+      <section class="confirm-dialog" @click.stop>
+        <header>
+          <h2>{{ actionDialog.type.startsWith('rename') ? '重命名' : '确认删除' }}</h2>
+          <button type="button" aria-label="关闭弹窗" @click="closeActionDialog">
+            <Close :size="18" />
+          </button>
+        </header>
+        <div class="confirm-body">
+          <template v-if="actionDialog.type.startsWith('rename')">
+            <label>
+              <span>名称</span>
+              <input v-model="actionDialog.value" />
+            </label>
+          </template>
+          <template v-else>
+            <p>删除后将从当前列表移除。</p>
+            <strong>{{ actionDialog.value }}</strong>
+          </template>
+        </div>
+        <footer>
+          <button class="cancel-settings" type="button" @click="closeActionDialog">取消</button>
+          <button
+            class="confirm-primary"
+            :class="{ danger: actionDialog.type.startsWith('delete') }"
+            type="button"
+            @click="confirmActionDialog"
+          >
+            {{ actionDialog.type.startsWith('rename') ? '保存' : '删除' }}
+          </button>
         </footer>
       </section>
     </div>
