@@ -4,7 +4,6 @@ import {
   ArrowDown,
   ArrowRight,
   ChatDotRound,
-  CircleCloseFilled,
   Close,
   Delete,
   EditPen,
@@ -22,7 +21,49 @@ import { ElMessage } from 'element-plus'
 
 import { useChatStore, type ChatMessage, type ChatSession } from '@/stores/chat'
 
+interface PersistedAppState {
+  activeProject?: string
+  avatarImage?: string
+  profileName?: string
+  projectDescriptions?: Record<string, string>
+  projects?: string[]
+  projectSessions?: Record<string, ChatSession[]>
+  themeMode?: 'light' | 'dark'
+}
+
+const APP_STORAGE_KEY = 'ai-chat:app-state'
+const LEGACY_WELCOME_CONTENT = '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。'
+
+const normalizeMessages = (messages: ChatMessage[]) =>
+  messages.filter(
+    (message, index) =>
+      !(index === 0 && message.role === 'assistant' && message.content === LEGACY_WELCOME_CONTENT) &&
+      !(message.role === 'assistant' && !message.content.trim()),
+  )
+
+const normalizeProjectSessions = (sessions: Record<string, ChatSession[]>) =>
+  Object.fromEntries(
+    Object.entries(sessions).map(([projectName, items]) => [
+      projectName,
+      items.map((session) => ({
+        ...session,
+        messages: normalizeMessages(session.messages ?? []),
+      })),
+    ]),
+  )
+
+const readAppState = (): PersistedAppState => {
+  try {
+    if (!window.localStorage) return {}
+    const stored = window.localStorage.getItem(APP_STORAGE_KEY)
+    return stored ? JSON.parse(stored) : {}
+  } catch {
+    return {}
+  }
+}
+
 const chatStore = useChatStore()
+const storedAppState = readAppState()
 const draft = ref('')
 const messagesRef = ref<HTMLElement | null>(null)
 const isSidebarCollapsed = ref(false)
@@ -31,88 +72,56 @@ const searchText = ref('')
 const isProjectsOpen = ref(true)
 const isRecentOpen = ref(true)
 const isSettingsOpen = ref(false)
-const activeProject = ref('')
+const activeProject = ref(storedAppState.activeProject ?? '')
 const currentMode = ref<'chat' | 'project'>('chat')
 const isProjectHome = ref(false)
 const isPendingNewSession = ref(false)
 const isPendingProjectSession = ref(false)
 const activeProjectSessionId = ref('')
 const isProjectResponding = ref(false)
+const projectStreamingMessageContent = ref('')
+const projectStreamingMessageId = ref('')
+const isDeepThinking = ref(false)
+const activeMessageId = ref('')
+const hoveredNavigatorItem = ref<{ label: string; right: number; top: number } | null>(null)
 const openActionMenu = ref('')
 const actionMenuStyle = ref<Record<string, string>>({})
 const actionDialog = ref<
+  | { type: 'create-project'; value: string }
   | { type: 'rename-project'; projectName: string; value: string }
   | { type: 'delete-project'; projectName: string; value: string }
   | { type: 'rename-session'; sessionId: string; value: string }
   | { type: 'delete-session'; sessionId: string; value: string }
   | null
 >(null)
-const projectSessions = ref<Record<string, ChatSession[]>>({
-  'AI Chat 工作台': [
-    {
-      id: 'project-ai-plan',
-      title: '项目接口设计',
-      messages: [
-        {
-          id: 'project-ai-welcome',
-          role: 'assistant',
-          content: '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。',
-          createdAt: Date.now() - 1000 * 60 * 120,
-        },
-        {
-          id: 'project-ai-user',
-          role: 'user',
-          content: '帮我规划一下这个 AI Chat 项目的接口和状态结构。',
-          createdAt: Date.now() - 1000 * 60 * 118,
-        },
-      ],
-      updatedAt: Date.now() - 1000 * 60 * 110,
-    },
-  ],
-  面试题整理: [
-    {
-      id: 'project-interview-plan',
-      title: '项目内复习安排',
-      messages: [
-        {
-          id: 'project-interview-welcome',
-          role: 'assistant',
-          content: '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。',
-          createdAt: Date.now() - 1000 * 60 * 90,
-        },
-        {
-          id: 'project-interview-user',
-          role: 'user',
-          content: '这个项目里单独整理一份面试题复习顺序。',
-          createdAt: Date.now() - 1000 * 60 * 88,
-        },
-      ],
-      updatedAt: Date.now() - 1000 * 60 * 80,
-    },
-  ],
-  简历优化: [],
-})
-const profileName = ref('Feather Mask')
+const projectSessions = ref<Record<string, ChatSession[]>>({})
+const projectDescriptions = ref<Record<string, string>>(storedAppState.projectDescriptions ?? {})
+const profileName = ref(storedAppState.profileName ?? 'Feather Mask')
 const profileAvatar = ref('FM')
 const draftProfileName = ref(profileName.value)
-const avatarImage = ref('')
-const themeMode = ref<'light' | 'dark'>('light')
+const avatarImage = ref(storedAppState.avatarImage ?? '')
+const themeMode = ref<'light' | 'dark'>(storedAppState.themeMode ?? 'light')
 const draftThemeMode = ref<'light' | 'dark'>(themeMode.value)
-let projectResponseTimer: ReturnType<typeof window.setTimeout> | null = null
+let projectAbortController: AbortController | null = null
 
 const createId = () => crypto.randomUUID()
-const welcomeContent = '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。'
-
-const createWelcomeMessage = (): ChatMessage => ({
-  id: createId(),
-  role: 'assistant',
-  content: welcomeContent,
-  createdAt: Date.now(),
-})
-
 const summarizeTitle = (content: string) => {
   const normalized = content.trim().replace(/\s+/g, ' ')
   return normalized.length > 18 ? `${normalized.slice(0, 18)}...` : normalized || '新的对话'
+}
+
+const getNavigatorLabel = (content: string, index: number) => {
+  const normalized = content.trim().replace(/\s+/g, ' ')
+
+  if (!normalized) return `对话 ${index + 1}`
+
+  return normalized.length > 22 ? `${normalized.slice(0, 22)}...` : normalized
+}
+
+const getNavigatorFullLabel = (content: string, index: number) => {
+  const normalized = content.trim().replace(/\s+/g, ' ')
+
+  return normalized || `对话 ${index + 1}`
 }
 
 const activeProjectSession = computed(() => {
@@ -123,22 +132,24 @@ const activeProjectSession = computed(() => {
 const activeSession = computed(() => activeProjectSession.value ?? chatStore.activeSession)
 const hasDraft = computed(() => draft.value.trim().length > 0)
 const isFreshSession = computed(
-  () => isPendingNewSession.value || isPendingProjectSession.value || (activeSession.value?.messages.length ?? 0) <= 1,
+  () => isPendingNewSession.value || isPendingProjectSession.value || (activeSession.value?.messages.length ?? 0) === 0,
 )
 const isProjectMode = computed(() => currentMode.value === 'project' && Boolean(activeProject.value))
 const isResponding = computed(() => chatStore.isResponding || isProjectResponding.value)
+const isWaitingForFirstToken = computed(() => isResponding.value && activeSession.value?.messages.at(-1)?.role === 'user')
+const streamingAssistantMessageId = computed(() => {
+  return isProjectMode.value ? projectStreamingMessageId.value : chatStore.streamingMessageId
+})
+const streamingAssistantMessageContent = computed(() => {
+  return isProjectMode.value ? projectStreamingMessageContent.value : chatStore.streamingMessageContent
+})
 const headerSessionTitle = computed(() => {
   if (isPendingNewSession.value || isPendingProjectSession.value) return '新的对话'
-  return activeSession.value?.title
+  return activeSession.value?.title ?? '新的对话'
 })
 
-const projects = ref(['AI Chat 工作台', '面试题整理', '简历优化'])
-
-const promptExamples = [
-  '帮我把这个项目接入 OpenAI API',
-  '写一个产品需求文档的大纲',
-  '整理一份前端面试复习计划',
-]
+const projects = ref<string[]>(storedAppState.projects ?? [])
+projectSessions.value = normalizeProjectSessions(storedAppState.projectSessions ?? {})
 
 const searchResults = computed(() => {
   const keyword = searchText.value.trim().toLowerCase()
@@ -162,7 +173,313 @@ const activeProjectSessions = computed(() => {
   return projectSessions.value[activeProject.value] ?? []
 })
 
+const messageNavigatorItems = computed(() =>
+  (activeSession.value?.messages ?? [])
+    .filter((message) => message.role === 'user')
+    .map((message, index) => ({
+      id: message.id,
+      fullLabel: getNavigatorFullLabel(message.content, index),
+      label: getNavigatorLabel(message.content, index),
+      role: message.role,
+    })),
+)
+
 const savedAvatarDisplay = computed(() => profileAvatar.value.trim().slice(0, 2).toUpperCase() || 'U')
+
+const persistAppState = () => {
+  const state: PersistedAppState = {
+    activeProject: activeProject.value,
+    avatarImage: avatarImage.value,
+    profileName: profileName.value,
+    projectDescriptions: projectDescriptions.value,
+    projects: projects.value,
+    projectSessions: projectSessions.value,
+    themeMode: themeMode.value,
+  }
+
+  try {
+    window.localStorage?.setItem(APP_STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    // Storage can be unavailable in restricted browser contexts.
+  }
+}
+
+const escapeHtml = (content: string) =>
+  content
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+
+const renderInlineMarkdown = (content: string) =>
+  escapeHtml(content)
+    .replace(/(^|[^`])`([^`\n]+)`(?!`)/g, '$1<code>$2</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+
+const renderTextBlocks = (content: string) => {
+  const blocks: string[] = []
+  const lines = content.split('\n')
+  const paragraph: string[] = []
+  let index = 0
+
+  const flushParagraph = () => {
+    const text = paragraph.join('\n').trim()
+    if (text) {
+      blocks.push(`<p>${renderInlineMarkdown(text).replace(/\n/g, '<br>')}</p>`)
+    }
+    paragraph.length = 0
+  }
+
+  while (index < lines.length) {
+    const line = lines[index]
+    const trimmed = line.trim()
+
+    if (!trimmed) {
+      flushParagraph()
+      index += 1
+      continue
+    }
+
+    if (/^-{3,}$/.test(trimmed)) {
+      flushParagraph()
+      blocks.push('<hr>')
+      index += 1
+      continue
+    }
+
+    if (/^#{1,3}\s+/.test(trimmed)) {
+      flushParagraph()
+      const level = Math.min(trimmed.match(/^#+/)?.[0].length ?? 2, 3)
+      blocks.push(`<h${level}>${renderInlineMarkdown(trimmed.replace(/^#{1,3}\s*/, ''))}</h${level}>`)
+      index += 1
+      continue
+    }
+
+    if (/^[-*]\s+/.test(trimmed)) {
+      flushParagraph()
+      const items: string[] = []
+
+      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
+        items.push(`<li>${renderInlineMarkdown(lines[index].trim().replace(/^[-*]\s+/, ''))}</li>`)
+        index += 1
+      }
+
+      blocks.push(`<ul>${items.join('')}</ul>`)
+      continue
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      flushParagraph()
+      const items: string[] = []
+
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
+        items.push(`<li>${renderInlineMarkdown(lines[index].trim().replace(/^\d+\.\s+/, ''))}</li>`)
+        index += 1
+      }
+
+      blocks.push(`<ol>${items.join('')}</ol>`)
+      continue
+    }
+
+    if (/^\|.+\|$/.test(trimmed)) {
+      flushParagraph()
+      const tableLines: string[] = []
+
+      while (index < lines.length && /^\|.+\|$/.test(lines[index].trim())) {
+        tableLines.push(lines[index].trim())
+        index += 1
+      }
+
+      const rows = tableLines
+        .filter((line) => !/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line.trim()))
+        .map((line) => line.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim()))
+
+      if (rows.length > 1) {
+        const [head, ...body] = rows
+        blocks.push([
+          '<table>',
+          `<thead><tr>${head.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join('')}</tr></thead>`,
+          `<tbody>${body.map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join('')}</tr>`).join('')}</tbody>`,
+          '</table>',
+        ].join(''))
+        continue
+      }
+    }
+
+    paragraph.push(line)
+    index += 1
+  }
+
+  flushParagraph()
+
+  return blocks.join('')
+}
+
+const isJavascriptLanguage = (lang: string) => ['javascript', 'typescript', 'js', 'ts'].includes(lang.toLowerCase())
+
+const formatJavascriptCode = (code: string) => {
+  const repaired = code
+    .replace(/\bfunction([A-Za-z_$])/g, 'function $1')
+    .replace(/\breturnfunction\b/g, 'return function')
+    .replace(/\b(const|let|var)([A-Za-z_$])/g, '$1 $2')
+    .replace(/\b(if|for|while|switch|catch)(?=\()/g, '$1 ')
+    .replace(/,(?=\S)/g, ', ')
+    .replace(/\/\/\s*/g, '\n// ')
+    .replace(/\{/g, ' {\n')
+    .replace(/;/g, ';\n')
+    .replace(/\}/g, '\n}\n')
+    .replace(/\n{2,}/g, '\n')
+    .replace(/\n}\n;\n/g, '\n};\n')
+
+  let depth = 0
+
+  return repaired
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      if (line.startsWith('}')) depth = Math.max(0, depth - 1)
+
+      const formattedLine = `${'  '.repeat(depth)}${line}`
+
+      if (line.endsWith('{')) depth += 1
+
+      return formattedLine
+    })
+    .join('\n')
+}
+
+const formatCodeContent = (lang: string, code: string[]) => {
+  const rawCode = code.join('\n').trimEnd()
+
+  if (!isJavascriptLanguage(lang)) return rawCode
+
+  return formatJavascriptCode(rawCode)
+}
+
+const renderCodeBlock = (lang: string, code: string[]) => [
+  '<div class="code-card">',
+  '<button class="code-copy" type="button" aria-label="复制代码"><span></span></button>',
+  `<pre><code data-lang="${escapeHtml(lang)}">${escapeHtml(formatCodeContent(lang, code))}</code></pre>`,
+  '</div>',
+].join('')
+
+const codeLanguages = [
+  'javascript',
+  'typescript',
+  'python',
+  'bash',
+  'shell',
+  'html',
+  'json',
+  'css',
+  'vue',
+  'js',
+  'ts',
+]
+
+const normalizeMarkdownContent = (content: string) => {
+  const languagePattern = codeLanguages.join('|')
+  const openingFence = new RegExp(`([^\\n])(\`{2,3}(?:${languagePattern})(?=\\w|\\s))`, 'gi')
+
+  return content
+    .replace(openingFence, '$1\n$2')
+    .replace(/([^\n])\s*(---+)(?=\s*#{1,6})/g, '$1\n$2\n')
+    .replace(/(---+)\s*(#{1,6})/g, '$1\n$2')
+    .replace(/([^\n])\s+(#{1,6})(?=\S)/g, '$1\n$2')
+    .replace(/([^\n])(#{1,6})(?=\S)/g, '$1\n$2')
+    .replace(/^(#{1,6})(\S)/gm, '$1 $2')
+    .replace(/([^\n])\s+([-*])(?=\S)/g, '$1\n$2 ')
+    .replace(/^(\s*)([-*])(?=\S)/gm, '$1$2 ')
+    .replace(/([^\n])\s+(\d+\.)(?=\S)/g, '$1\n$2 ')
+    .replace(/^(\s*)(\d+\.)(?=\S)/gm, '$1$2 ')
+}
+
+const parseCodeFence = (line: string) => {
+  const match = line.match(/^`{2,3}([^\s`]*)?(.*)$/)
+  if (!match) return null
+
+  const rawInfo = match[1] ?? ''
+  const rawRest = match[2] ?? ''
+  const gluedLanguage = codeLanguages.find((language) => rawInfo.toLowerCase().startsWith(language))
+
+  if (gluedLanguage) {
+    return {
+      lang: gluedLanguage,
+      rest: `${rawInfo.slice(gluedLanguage.length)}${rawRest}`.trimStart(),
+    }
+  }
+
+  return {
+    lang: rawInfo,
+    rest: rawRest.trimStart(),
+  }
+}
+
+const renderMarkdown = (content: string) => {
+  const blocks: string[] = []
+  const textBuffer: string[] = []
+  const codeBuffer: string[] = []
+  const normalizedContent = normalizeMarkdownContent(content)
+  let codeLang = ''
+  let isCodeBlock = false
+
+  const flushText = () => {
+    const html = renderTextBlocks(textBuffer.join('\n'))
+    if (html) blocks.push(html)
+    textBuffer.length = 0
+  }
+
+  const flushCode = () => {
+    blocks.push(renderCodeBlock(codeLang, codeBuffer))
+    codeBuffer.length = 0
+    codeLang = ''
+  }
+
+  normalizedContent.split('\n').forEach((line) => {
+    const trimmedLine = line.trim()
+    const fence = parseCodeFence(trimmedLine)
+
+    if (isCodeBlock) {
+      if (/^`{2,3}$/.test(trimmedLine)) {
+        flushCode()
+        isCodeBlock = false
+        return
+      }
+
+      const looseClosingFence = line.match(/^(.*?)(`{1,3})\s*$/)
+      if (looseClosingFence) {
+        if (looseClosingFence[1]) codeBuffer.push(looseClosingFence[1])
+        flushCode()
+        isCodeBlock = false
+        return
+      }
+
+      codeBuffer.push(line)
+      return
+    }
+
+    if (fence) {
+      flushText()
+      codeLang = fence.lang
+      isCodeBlock = true
+      if (fence.rest) codeBuffer.push(fence.rest)
+      return
+    }
+
+    textBuffer.push(line)
+  })
+
+  if (isCodeBlock) {
+    flushCode()
+  } else {
+    flushText()
+  }
+
+  return blocks.join('')
+}
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -170,11 +487,76 @@ const scrollToBottom = async () => {
   messagesRef.value.scrollTop = messagesRef.value.scrollHeight
 }
 
+const updateActiveMessageFromScroll = () => {
+  if (!messagesRef.value) return
+
+  const rows = Array.from(messagesRef.value.querySelectorAll<HTMLElement>('[data-message-role="user"]'))
+  if (!rows.length) {
+    activeMessageId.value = ''
+    return
+  }
+
+  const marker = messagesRef.value.getBoundingClientRect().top + messagesRef.value.clientHeight * 0.42
+  const current = rows.findLast((row) => row.getBoundingClientRect().top <= marker) ?? rows[0]
+  activeMessageId.value = current?.dataset.messageId ?? ''
+}
+
+const jumpToMessage = async (messageId: string) => {
+  await nextTick()
+  const row = messagesRef.value?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
+  if (!row) return
+
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  activeMessageId.value = messageId
+}
+
+const copyRenderedCode = async (event: MouseEvent) => {
+  const copyButton = (event.target as HTMLElement).closest<HTMLButtonElement>('.code-copy')
+  if (!copyButton) return
+
+  const code = copyButton.parentElement?.querySelector('code')?.textContent ?? ''
+  if (!code) return
+
+  await navigator.clipboard.writeText(code)
+  ElMessage.success('已复制代码')
+}
+
+const showNavigatorTooltip = (
+  item: { fullLabel: string },
+  event: MouseEvent,
+) => {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  hoveredNavigatorItem.value = {
+    label: item.fullLabel,
+    right: window.innerWidth - rect.left + 14,
+    top: rect.top + rect.height / 2,
+  }
+}
+
+const hideNavigatorTooltip = () => {
+  hoveredNavigatorItem.value = null
+}
+
 watch(
   () => activeSession.value?.messages.length,
   () => {
-    void scrollToBottom()
+    void scrollToBottom().then(updateActiveMessageFromScroll)
   },
+)
+
+watch(
+  () => activeSession.value?.id,
+  () => {
+    void nextTick(updateActiveMessageFromScroll)
+  },
+)
+
+watch(
+  [projects, projectSessions, projectDescriptions, activeProject, profileName, avatarImage, themeMode],
+  () => {
+    persistAppState()
+  },
+  { deep: true },
 )
 
 const createProjectSession = (projectName: string) => {
@@ -182,12 +564,7 @@ const createProjectSession = (projectName: string) => {
   const session: ChatSession = {
     id: `project-${createId()}`,
     title: '新的对话',
-    messages: [
-      {
-        ...createWelcomeMessage(),
-        createdAt: now,
-      },
-    ],
+    messages: [],
     updatedAt: now,
   }
 
@@ -212,30 +589,60 @@ const sendProjectContent = async (content: string) => {
     createdAt: now,
   })
 
-  if (session.messages.length === 2) {
+  if (session.messages.length === 1) {
     session.title = summarizeTitle(trimmedContent)
   }
 
   session.updatedAt = now
   isProjectResponding.value = true
+  projectAbortController = new AbortController()
 
-  await new Promise<void>((resolve) => {
-    projectResponseTimer = window.setTimeout(() => {
-      projectResponseTimer = null
-      resolve()
-    }, 900)
+  persistAppState()
+
+  let assistantMessage: ChatMessage | null = null
+  const reply = await chatStore.requestAssistantReply(session.messages, {
+    deepThinking: isDeepThinking.value,
+    onToken: (token) => {
+      if (!assistantMessage) {
+        assistantMessage = {
+          id: createId(),
+          role: 'assistant',
+          content: '',
+          createdAt: Date.now(),
+        }
+        session.messages.push(assistantMessage)
+        projectStreamingMessageId.value = assistantMessage.id
+        projectStreamingMessageContent.value = ''
+      }
+      projectStreamingMessageContent.value += token
+      session.updatedAt = Date.now()
+    },
+    signal: projectAbortController.signal,
+    systemPrompt: [
+      '你是 AI Chat，一个简洁、可靠的中文 AI 助手。回答要自然、清楚，优先解决用户当前问题。',
+      `当前项目：${activeProject.value}`,
+      projectDescriptions.value[activeProject.value] ? `项目说明：${projectDescriptions.value[activeProject.value]}` : '',
+    ].filter(Boolean).join('\n'),
   })
-
+  projectAbortController = null
   if (!isProjectResponding.value) return
 
-  session.messages.push({
-    id: createId(),
-    role: 'assistant',
-    content: chatStore.composeAssistantReply(trimmedContent),
-    createdAt: Date.now(),
-  })
+  if (assistantMessage) {
+    assistantMessage.content = projectStreamingMessageContent.value
+  } else if (reply) {
+    assistantMessage = {
+      id: createId(),
+      role: 'assistant',
+      content: reply,
+      createdAt: Date.now(),
+    }
+    session.messages.push(assistantMessage)
+  }
   session.updatedAt = Date.now()
   isProjectResponding.value = false
+  projectStreamingMessageContent.value = ''
+  projectStreamingMessageId.value = ''
+  persistAppState()
 }
 
 const send = async () => {
@@ -261,37 +668,39 @@ const send = async () => {
     return
   }
 
-  await chatStore.sendMessage(content)
+  await chatStore.sendMessage(content, { deepThinking: isDeepThinking.value })
 }
 
-const usePrompt = (prompt: string) => {
-  draft.value = prompt
-}
+const restoreInterruptedDraft = () => {
+  const session = activeSession.value
+  if (!session) return
 
-const clearChat = () => {
-  if (activeProjectSession.value) {
-    const now = Date.now()
-    activeProjectSession.value.title = '新的对话'
-    activeProjectSession.value.messages = [
-      {
-        ...createWelcomeMessage(),
-        createdAt: now,
-      },
-    ]
-    activeProjectSession.value.updatedAt = now
-  } else {
-    chatStore.clearActiveSession()
+  let lastMessage = session.messages.at(-1)
+  if (lastMessage?.role === 'assistant') {
+    session.messages.pop()
+    lastMessage = session.messages.at(-1)
   }
-  ElMessage.success('已清空当前会话')
+
+  if (lastMessage?.role !== 'user') return
+
+  draft.value = lastMessage.content
+  session.messages.pop()
+
+  if (session.messages.length <= 1) {
+    session.title = '新的对话'
+  }
+  session.updatedAt = Date.now()
+  persistAppState()
 }
 
 const stopResponding = () => {
+  restoreInterruptedDraft()
   chatStore.stopResponding()
-  if (projectResponseTimer) {
-    window.clearTimeout(projectResponseTimer)
-    projectResponseTimer = null
-  }
+  projectAbortController?.abort()
+  projectAbortController = null
   isProjectResponding.value = false
+  projectStreamingMessageContent.value = ''
+  projectStreamingMessageId.value = ''
   ElMessage.info('已终止生成')
 }
 
@@ -417,6 +826,31 @@ const toggleActionMenu = (menuId: string, event?: MouseEvent) => {
   }
 }
 
+const openCreateProjectDialog = () => {
+  actionDialog.value = { type: 'create-project', value: '' }
+  openActionMenu.value = ''
+}
+
+const applyCreateProject = (name: string) => {
+  const projectName = name.trim()
+  if (!projectName) return
+
+  const nextName = projects.value.includes(projectName)
+    ? `${projectName} ${projects.value.filter((item) => item.startsWith(projectName)).length + 1}`
+    : projectName
+
+  projects.value = [nextName, ...projects.value]
+  projectSessions.value = {
+    ...projectSessions.value,
+    [nextName]: [],
+  }
+  projectDescriptions.value = {
+    ...projectDescriptions.value,
+    [nextName]: '',
+  }
+  selectProject(nextName)
+}
+
 const renameProject = (projectName: string) => {
   actionDialog.value = { type: 'rename-project', projectName, value: projectName }
   openActionMenu.value = ''
@@ -431,7 +865,12 @@ const applyRenameProject = (projectName: string, name: string) => {
     ...projectSessions.value,
     [nextName]: projectSessions.value[projectName] ?? [],
   }
+  projectDescriptions.value = {
+    ...projectDescriptions.value,
+    [nextName]: projectDescriptions.value[projectName] ?? '',
+  }
   delete projectSessions.value[projectName]
+  delete projectDescriptions.value[projectName]
 
   if (activeProject.value === projectName) {
     activeProject.value = nextName
@@ -446,6 +885,7 @@ const deleteProject = (projectName: string) => {
 const applyDeleteProject = (projectName: string) => {
   projects.value = projects.value.filter((item) => item !== projectName)
   delete projectSessions.value[projectName]
+  delete projectDescriptions.value[projectName]
   if (activeProject.value === projectName) {
     activeProject.value = ''
     activeProjectSessionId.value = ''
@@ -498,6 +938,10 @@ const closeActionDialog = () => {
 const confirmActionDialog = () => {
   const dialog = actionDialog.value
   if (!dialog) return
+
+  if (dialog.type === 'create-project') {
+    applyCreateProject(dialog.value)
+  }
 
   if (dialog.type === 'rename-project') {
     applyRenameProject(dialog.projectName, dialog.value)
@@ -621,6 +1065,13 @@ const formatTime = (timestamp: number) =>
             <span>项目</span>
           </button>
           <div class="project-list">
+            <button class="new-project" type="button" @click="openCreateProjectDialog">
+              <span class="folder-plus">
+                <Folder :size="19" />
+                <Plus :size="11" />
+              </span>
+              <span>新项目</span>
+            </button>
             <div v-for="project in projects" :key="project" class="nav-row-wrap">
               <button
                 class="project-item"
@@ -654,6 +1105,7 @@ const formatTime = (timestamp: number) =>
             <span>最近的对话</span>
           </button>
           <div class="session-list">
+            <p v-if="chatStore.sessions.length === 0" class="sidebar-empty">暂无对话</p>
             <div v-for="session in chatStore.sessions" :key="session.id" class="nav-row-wrap">
               <button
                 class="session-item"
@@ -705,14 +1157,6 @@ const formatTime = (timestamp: number) =>
           <span>{{ isProjectMode ? '项目' : 'AI Chat' }}</span>
           <strong>{{ isProjectMode ? activeProject : headerSessionTitle }}</strong>
         </button>
-        <div class="header-actions">
-          <el-tooltip v-if="isResponding" content="终止生成" placement="bottom">
-            <el-button class="stop-button" :icon="CircleCloseFilled" circle @click="stopResponding" />
-          </el-tooltip>
-          <el-tooltip content="清空当前会话" placement="bottom">
-            <el-button :icon="Delete" circle @click="clearChat" />
-          </el-tooltip>
-        </div>
       </header>
 
       <template v-if="isProjectMode && isProjectHome">
@@ -722,6 +1166,11 @@ const formatTime = (timestamp: number) =>
               <FolderOpened :size="34" />
               <h1>{{ activeProject }}</h1>
             </div>
+            <textarea
+              v-model="projectDescriptions[activeProject]"
+              class="project-description"
+              placeholder="添加项目说明，让这个项目里的对话有更清晰的背景。"
+            />
 
             <div class="project-hero-composer">
               <el-input
@@ -732,7 +1181,16 @@ const formatTime = (timestamp: number) =>
                 :placeholder="`${activeProject}中的新聊天`"
                 @keydown.enter.exact.prevent="sendProjectMessage"
               />
-              <button type="button" class="project-send" :disabled="!hasDraft" @click="sendProjectMessage">
+              <div class="composer-tools project-tools">
+                <button type="button" :class="{ active: isDeepThinking }" @click="isDeepThinking = !isDeepThinking">
+                  <ChatDotRound :size="16" />
+                  <span>深度思考</span>
+                </button>
+              </div>
+              <button v-if="isResponding" type="button" class="project-send project-stop" @click="stopResponding">
+                <span />
+              </button>
+              <button v-else type="button" class="project-send" :disabled="!hasDraft" @click="sendProjectMessage">
                 <Promotion :size="22" />
               </button>
             </div>
@@ -767,7 +1225,7 @@ const formatTime = (timestamp: number) =>
                   </button>
                 </div>
               </article>
-              <p v-if="activeProjectSessions.length === 0" class="project-empty">这个项目还没有对话</p>
+              <p v-if="activeProjectSessions.length === 0" class="project-empty">还没有项目对话。先在上方输入第一条消息。</p>
             </div>
           </div>
         </div>
@@ -790,13 +1248,19 @@ const formatTime = (timestamp: number) =>
                 placeholder="给 AI Chat 发送消息"
                 @keydown.enter.exact.prevent="send"
               />
+              <div class="composer-tools">
+                <button type="button" :class="{ active: isDeepThinking }" @click="isDeepThinking = !isDeepThinking">
+                  <ChatDotRound :size="16" />
+                  <span>深度思考</span>
+                </button>
+              </div>
               <el-button
                 v-if="isResponding"
                 class="composer-stop"
-                :icon="CircleCloseFilled"
-                circle
                 @click="stopResponding"
-              />
+              >
+                <span />
+              </el-button>
               <el-button
                 v-else
                 type="primary"
@@ -806,20 +1270,17 @@ const formatTime = (timestamp: number) =>
                 @click="send"
               />
             </div>
-            <div class="prompt-row center-prompts">
-              <button v-for="prompt in promptExamples" :key="prompt" type="button" @click="usePrompt(prompt)">
-                {{ prompt }}
-              </button>
-            </div>
           </div>
         </div>
       </template>
 
       <template v-else>
-        <div ref="messagesRef" class="messages">
+        <div ref="messagesRef" class="messages" @click="copyRenderedCode" @scroll="updateActiveMessageFromScroll">
           <article
             v-for="message in activeSession?.messages"
             :key="message.id"
+            :data-message-id="message.id"
+            :data-message-role="message.role"
             class="message-row"
             :class="message.role"
           >
@@ -829,11 +1290,14 @@ const formatTime = (timestamp: number) =>
                 <strong>{{ message.role === 'assistant' ? 'AI Chat' : '你' }}</strong>
                 <span>{{ formatTime(message.createdAt) }}</span>
               </div>
-              <p>{{ message.content }}</p>
+              <div v-if="message.id === streamingAssistantMessageId" class="streaming-text">
+                {{ streamingAssistantMessageContent }}<span class="stream-cursor" />
+              </div>
+              <div v-else class="markdown-body" v-html="renderMarkdown(message.content)" />
             </div>
           </article>
 
-          <article v-if="isResponding" class="message-row assistant">
+          <article v-if="isWaitingForFirstToken" class="message-row assistant">
             <div class="avatar">AI</div>
             <div class="message-content">
               <div class="message-meta">
@@ -849,13 +1313,36 @@ const formatTime = (timestamp: number) =>
           </article>
         </div>
 
-        <div class="composer-panel">
-          <div class="prompt-row">
-            <button v-for="prompt in promptExamples" :key="prompt" type="button" @click="usePrompt(prompt)">
-              {{ prompt }}
-            </button>
-          </div>
+        <aside v-if="messageNavigatorItems.length" class="message-navigator" aria-label="当前对话导航">
+          <button
+            v-for="item in messageNavigatorItems"
+            :key="item.id"
+            class="message-nav-item"
+            :class="{ active: item.id === activeMessageId }"
+            type="button"
+            @mouseenter="showNavigatorTooltip(item, $event)"
+            @mouseleave="hideNavigatorTooltip"
+            @focus="showNavigatorTooltip(item, $event)"
+            @blur="hideNavigatorTooltip"
+            @click="jumpToMessage(item.id)"
+          >
+            <span>{{ item.label }}</span>
+            <i />
+          </button>
+        </aside>
 
+        <div
+          v-if="hoveredNavigatorItem"
+          class="message-nav-tooltip"
+          :style="{
+            right: `${hoveredNavigatorItem.right}px`,
+            top: `${hoveredNavigatorItem.top}px`,
+          }"
+        >
+          {{ hoveredNavigatorItem.label }}
+        </div>
+
+        <div class="composer-panel">
           <div class="composer">
             <el-input
               v-model="draft"
@@ -865,13 +1352,19 @@ const formatTime = (timestamp: number) =>
               placeholder="给 AI Chat 发送消息"
               @keydown.enter.exact.prevent="send"
             />
+            <div class="composer-tools">
+              <button type="button" :class="{ active: isDeepThinking }" @click="isDeepThinking = !isDeepThinking">
+                <ChatDotRound :size="16" />
+                <span>深度思考</span>
+              </button>
+            </div>
             <el-button
               v-if="isResponding"
               class="composer-stop"
-              :icon="CircleCloseFilled"
-              circle
               @click="stopResponding"
-            />
+            >
+              <span />
+            </el-button>
             <el-button
               v-else
               type="primary"
@@ -975,16 +1468,18 @@ const formatTime = (timestamp: number) =>
     <div v-if="actionDialog" class="confirm-overlay" @click="closeActionDialog">
       <section class="confirm-dialog" @click.stop>
         <header>
-          <h2>{{ actionDialog.type.startsWith('rename') ? '重命名' : '确认删除' }}</h2>
+          <h2>
+            {{ actionDialog.type === 'create-project' ? '新项目' : actionDialog.type.startsWith('rename') ? '重命名' : '确认删除' }}
+          </h2>
           <button type="button" aria-label="关闭弹窗" @click="closeActionDialog">
             <Close :size="18" />
           </button>
         </header>
         <div class="confirm-body">
-          <template v-if="actionDialog.type.startsWith('rename')">
+          <template v-if="actionDialog.type === 'create-project' || actionDialog.type.startsWith('rename')">
             <label>
-              <span>名称</span>
-              <input v-model="actionDialog.value" />
+              <span>{{ actionDialog.type === 'create-project' ? '项目名称' : '名称' }}</span>
+              <input v-model="actionDialog.value" :placeholder="actionDialog.type === 'create-project' ? '输入新项目名称' : ''" />
             </label>
           </template>
           <template v-else>
@@ -1000,7 +1495,7 @@ const formatTime = (timestamp: number) =>
             type="button"
             @click="confirmActionDialog"
           >
-            {{ actionDialog.type.startsWith('rename') ? '保存' : '删除' }}
+            {{ actionDialog.type === 'create-project' || actionDialog.type.startsWith('rename') ? '保存' : '删除' }}
           </button>
         </footer>
       </section>
