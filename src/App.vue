@@ -18,8 +18,16 @@ import {
   Sunny,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import MarkdownIt from 'markdown-it'
 
-import { useChatStore, type ChatMessage, type ChatSession } from '@/stores/chat'
+import {
+  MISSING_FINAL_ANSWER,
+  splitReasoningFromAnswer,
+  stripFinalAnswerMarker,
+  useChatStore,
+  type ChatMessage,
+  type ChatSession,
+} from '@/stores/chat'
 
 interface PersistedAppState {
   activeProject?: string
@@ -81,8 +89,14 @@ const activeProjectSessionId = ref('')
 const isProjectResponding = ref(false)
 const projectStreamingMessageContent = ref('')
 const projectStreamingMessageId = ref('')
+const projectStreamingReasoningContent = ref('')
+const projectStreamingReasoningEndedAt = ref(0)
+const projectStreamingReasoningStartedAt = ref(0)
 const isDeepThinking = ref(false)
+const isWebSearch = ref(false)
+const liveNow = ref(Date.now())
 const activeMessageId = ref('')
+const collapsedReasoning = ref<Record<string, boolean>>({})
 const hoveredNavigatorItem = ref<{ label: string; right: number; top: number } | null>(null)
 const openActionMenu = ref('')
 const actionMenuStyle = ref<Record<string, string>>({})
@@ -103,6 +117,7 @@ const avatarImage = ref(storedAppState.avatarImage ?? '')
 const themeMode = ref<'light' | 'dark'>(storedAppState.themeMode ?? 'light')
 const draftThemeMode = ref<'light' | 'dark'>(themeMode.value)
 let projectAbortController: AbortController | null = null
+let liveTimer: number | undefined
 
 const createId = () => crypto.randomUUID()
 const summarizeTitle = (content: string) => {
@@ -142,6 +157,15 @@ const streamingAssistantMessageId = computed(() => {
 })
 const streamingAssistantMessageContent = computed(() => {
   return isProjectMode.value ? projectStreamingMessageContent.value : chatStore.streamingMessageContent
+})
+const streamingReasoningContent = computed(() => {
+  return isProjectMode.value ? projectStreamingReasoningContent.value : chatStore.streamingReasoningContent
+})
+const streamingReasoningEndedAt = computed(() => {
+  return isProjectMode.value ? projectStreamingReasoningEndedAt.value : chatStore.streamingReasoningEndedAt
+})
+const streamingReasoningStartedAt = computed(() => {
+  return isProjectMode.value ? projectStreamingReasoningStartedAt.value : chatStore.streamingReasoningStartedAt
 })
 const headerSessionTitle = computed(() => {
   if (isPendingNewSession.value || isPendingProjectSession.value) return '新的对话'
@@ -212,111 +236,6 @@ const escapeHtml = (content: string) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
 
-const renderInlineMarkdown = (content: string) =>
-  escapeHtml(content)
-    .replace(/(^|[^`])`([^`\n]+)`(?!`)/g, '$1<code>$2</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
-
-const renderTextBlocks = (content: string) => {
-  const blocks: string[] = []
-  const lines = content.split('\n')
-  const paragraph: string[] = []
-  let index = 0
-
-  const flushParagraph = () => {
-    const text = paragraph.join('\n').trim()
-    if (text) {
-      blocks.push(`<p>${renderInlineMarkdown(text).replace(/\n/g, '<br>')}</p>`)
-    }
-    paragraph.length = 0
-  }
-
-  while (index < lines.length) {
-    const line = lines[index]
-    const trimmed = line.trim()
-
-    if (!trimmed) {
-      flushParagraph()
-      index += 1
-      continue
-    }
-
-    if (/^-{3,}$/.test(trimmed)) {
-      flushParagraph()
-      blocks.push('<hr>')
-      index += 1
-      continue
-    }
-
-    if (/^#{1,3}\s+/.test(trimmed)) {
-      flushParagraph()
-      const level = Math.min(trimmed.match(/^#+/)?.[0].length ?? 2, 3)
-      blocks.push(`<h${level}>${renderInlineMarkdown(trimmed.replace(/^#{1,3}\s*/, ''))}</h${level}>`)
-      index += 1
-      continue
-    }
-
-    if (/^[-*]\s+/.test(trimmed)) {
-      flushParagraph()
-      const items: string[] = []
-
-      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
-        items.push(`<li>${renderInlineMarkdown(lines[index].trim().replace(/^[-*]\s+/, ''))}</li>`)
-        index += 1
-      }
-
-      blocks.push(`<ul>${items.join('')}</ul>`)
-      continue
-    }
-
-    if (/^\d+\.\s+/.test(trimmed)) {
-      flushParagraph()
-      const items: string[] = []
-
-      while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
-        items.push(`<li>${renderInlineMarkdown(lines[index].trim().replace(/^\d+\.\s+/, ''))}</li>`)
-        index += 1
-      }
-
-      blocks.push(`<ol>${items.join('')}</ol>`)
-      continue
-    }
-
-    if (/^\|.+\|$/.test(trimmed)) {
-      flushParagraph()
-      const tableLines: string[] = []
-
-      while (index < lines.length && /^\|.+\|$/.test(lines[index].trim())) {
-        tableLines.push(lines[index].trim())
-        index += 1
-      }
-
-      const rows = tableLines
-        .filter((line) => !/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line.trim()))
-        .map((line) => line.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim()))
-
-      if (rows.length > 1) {
-        const [head, ...body] = rows
-        blocks.push([
-          '<table>',
-          `<thead><tr>${head.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join('')}</tr></thead>`,
-          `<tbody>${body.map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join('')}</tr>`).join('')}</tbody>`,
-          '</table>',
-        ].join(''))
-        continue
-      }
-    }
-
-    paragraph.push(line)
-    index += 1
-  }
-
-  flushParagraph()
-
-  return blocks.join('')
-}
-
 const isJavascriptLanguage = (lang: string) => ['javascript', 'typescript', 'js', 'ts'].includes(lang.toLowerCase())
 
 const formatJavascriptCode = (code: string) => {
@@ -382,104 +301,63 @@ const codeLanguages = [
 
 const normalizeMarkdownContent = (content: string) => {
   const languagePattern = codeLanguages.join('|')
-  const openingFence = new RegExp(`([^\\n])(\`{2,3}(?:${languagePattern})(?=\\w|\\s))`, 'gi')
+  const gluedFence = new RegExp(`\`{3}(${languagePattern})(?=\\S)`, 'gi')
+  const openingFence = new RegExp(`([^\\n])(\`{3}(?:${languagePattern})?(?:\\s|\\n|$))`, 'gi')
 
   return content
+    .replace(gluedFence, '```$1\n')
     .replace(openingFence, '$1\n$2')
-    .replace(/([^\n])\s*(---+)(?=\s*#{1,6})/g, '$1\n$2\n')
-    .replace(/(---+)\s*(#{1,6})/g, '$1\n$2')
-    .replace(/([^\n])\s+(#{1,6})(?=\S)/g, '$1\n$2')
-    .replace(/([^\n])(#{1,6})(?=\S)/g, '$1\n$2')
+    .replace(/^\\(#{1,6}\s+)/gm, '$1')
+    .replace(/^(#{1,6})\s+(#{1,6}\s+)/gm, '$2')
+    .replace(/([。！？：:；;）)])\s*(#{1,6})(?=\S)/g, '$1\n\n$2')
     .replace(/^(#{1,6})(\S)/gm, '$1 $2')
-    .replace(/([^\n])\s+([-*])(?=\S)/g, '$1\n$2 ')
-    .replace(/^(\s*)([-*])(?=\S)/gm, '$1$2 ')
-    .replace(/([^\n])\s+(\d+\.)(?=\S)/g, '$1\n$2 ')
-    .replace(/^(\s*)(\d+\.)(?=\S)/gm, '$1$2 ')
 }
 
-const parseCodeFence = (line: string) => {
-  const match = line.match(/^`{2,3}([^\s`]*)?(.*)$/)
-  if (!match) return null
+const markdown = new MarkdownIt({
+  breaks: false,
+  html: false,
+  linkify: true,
+  typographer: false,
+})
 
-  const rawInfo = match[1] ?? ''
-  const rawRest = match[2] ?? ''
-  const gluedLanguage = codeLanguages.find((language) => rawInfo.toLowerCase().startsWith(language))
+const defaultLinkOpen = markdown.renderer.rules.link_open
+markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
+  const token = tokens[index]
+  const targetIndex = token.attrIndex('target')
+  const relIndex = token.attrIndex('rel')
 
-  if (gluedLanguage) {
-    return {
-      lang: gluedLanguage,
-      rest: `${rawInfo.slice(gluedLanguage.length)}${rawRest}`.trimStart(),
-    }
-  }
+  if (targetIndex < 0) token.attrPush(['target', '_blank'])
+  else token.attrs![targetIndex][1] = '_blank'
 
-  return {
-    lang: rawInfo,
-    rest: rawRest.trimStart(),
-  }
+  if (relIndex < 0) token.attrPush(['rel', 'noreferrer'])
+  else token.attrs![relIndex][1] = 'noreferrer'
+
+  return defaultLinkOpen ? defaultLinkOpen(tokens, index, options, env, self) : self.renderToken(tokens, index, options)
 }
 
-const renderMarkdown = (content: string) => {
-  const blocks: string[] = []
-  const textBuffer: string[] = []
-  const codeBuffer: string[] = []
-  const normalizedContent = normalizeMarkdownContent(content)
-  let codeLang = ''
-  let isCodeBlock = false
+markdown.renderer.rules.fence = (tokens, index) => {
+  const token = tokens[index]
+  const lang = token.info.trim().split(/\s+/)[0] ?? ''
 
-  const flushText = () => {
-    const html = renderTextBlocks(textBuffer.join('\n'))
-    if (html) blocks.push(html)
-    textBuffer.length = 0
-  }
+  return renderCodeBlock(lang, token.content.split('\n'))
+}
 
-  const flushCode = () => {
-    blocks.push(renderCodeBlock(codeLang, codeBuffer))
-    codeBuffer.length = 0
-    codeLang = ''
-  }
+markdown.renderer.rules.code_block = (tokens, index) => renderCodeBlock('', tokens[index].content.split('\n'))
 
-  normalizedContent.split('\n').forEach((line) => {
-    const trimmedLine = line.trim()
-    const fence = parseCodeFence(trimmedLine)
+markdown.core.ruler.after('inline', 'clean_repeated_heading_marks', (state) => {
+  state.tokens.forEach((token, index) => {
+    if (token.type !== 'inline' || state.tokens[index - 1]?.type !== 'heading_open') return
 
-    if (isCodeBlock) {
-      if (/^`{2,3}$/.test(trimmedLine)) {
-        flushCode()
-        isCodeBlock = false
-        return
+    token.content = token.content.replace(/^#{1,6}\s+/, '')
+    token.children?.forEach((child) => {
+      if (child.type === 'text') {
+        child.content = child.content.replace(/^#{1,6}\s+/, '')
       }
-
-      const looseClosingFence = line.match(/^(.*?)(`{1,3})\s*$/)
-      if (looseClosingFence) {
-        if (looseClosingFence[1]) codeBuffer.push(looseClosingFence[1])
-        flushCode()
-        isCodeBlock = false
-        return
-      }
-
-      codeBuffer.push(line)
-      return
-    }
-
-    if (fence) {
-      flushText()
-      codeLang = fence.lang
-      isCodeBlock = true
-      if (fence.rest) codeBuffer.push(fence.rest)
-      return
-    }
-
-    textBuffer.push(line)
+    })
   })
+})
 
-  if (isCodeBlock) {
-    flushCode()
-  } else {
-    flushText()
-  }
-
-  return blocks.join('')
-}
+const renderMarkdown = (content: string) => markdown.render(normalizeMarkdownContent(content))
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -521,6 +399,76 @@ const copyRenderedCode = async (event: MouseEvent) => {
   ElMessage.success('已复制代码')
 }
 
+const getReasoningContent = (message: ChatMessage) => {
+  if (message.id === streamingAssistantMessageId.value) {
+    return streamingReasoningContent.value || message.reasoningContent || ''
+  }
+
+  return message.reasoningContent ?? splitReasoningFromAnswer(message.content)?.reasoning ?? ''
+}
+
+const getAnswerContent = (message: ChatMessage) => {
+  if (message.reasoningContent) return stripFinalAnswerMarker(message.content)
+
+  return stripFinalAnswerMarker(splitReasoningFromAnswer(message.content)?.answer ?? message.content)
+}
+
+const getReasoningStartedAt = (message: ChatMessage) => {
+  if (message.id === streamingAssistantMessageId.value) {
+    return streamingReasoningStartedAt.value || message.reasoningStartedAt || message.createdAt || 0
+  }
+
+  return message.reasoningStartedAt ?? 0
+}
+
+const getReasoningEndedAt = (message: ChatMessage) => {
+  if (message.id === streamingAssistantMessageId.value) {
+    return streamingReasoningEndedAt.value || message.reasoningEndedAt || 0
+  }
+
+  return message.reasoningEndedAt ?? 0
+}
+
+const getReasoningDuration = (message: ChatMessage) => {
+  const startedAt = getReasoningStartedAt(message)
+  const endedAt = getReasoningEndedAt(message)
+  const liveEndedAt = message.id === streamingAssistantMessageId.value && isResponding.value ? liveNow.value : 0
+
+  if (startedAt && (endedAt || liveEndedAt)) {
+    return `${Math.max(1, Math.round(((endedAt || liveEndedAt) - startedAt) / 1000))} 秒`
+  }
+
+  if (!startedAt) {
+    const fallbackReasoning = !message.reasoningContent ? splitReasoningFromAnswer(message.content)?.reasoning : ''
+    if (!fallbackReasoning) return ''
+
+    return `${Math.max(1, Math.min(30, Math.round(fallbackReasoning.length / 120)))} 秒`
+  }
+
+  return ''
+}
+
+const isReasoningOpen = (messageId: string) => collapsedReasoning.value[messageId] !== true
+
+const toggleReasoning = (messageId: string) => {
+  collapsedReasoning.value = {
+    ...collapsedReasoning.value,
+    [messageId]: isReasoningOpen(messageId),
+  }
+}
+
+const getReasoningLabel = (message: ChatMessage) => {
+  if (message.id === streamingAssistantMessageId.value && isResponding.value && !getReasoningEndedAt(message)) {
+    const duration = getReasoningDuration(message)
+    return duration ? `思考中（用时 ${duration}）` : '思考中'
+  }
+
+  const duration = getReasoningDuration(message)
+  if (duration) return `已思考（用时 ${duration}）`
+
+  return '已思考'
+}
+
 const showNavigatorTooltip = (
   item: { fullLabel: string },
   event: MouseEvent,
@@ -557,6 +505,28 @@ watch(
     persistAppState()
   },
   { deep: true },
+)
+
+watch(
+  isResponding,
+  (responding) => {
+    if (responding) {
+      liveNow.value = Date.now()
+      if (liveTimer === undefined) {
+        liveTimer = window.setInterval(() => {
+          liveNow.value = Date.now()
+        }, 1000)
+      }
+      return
+    }
+
+    liveNow.value = Date.now()
+    if (liveTimer !== undefined) {
+      window.clearInterval(liveTimer)
+      liveTimer = undefined
+    }
+  },
+  { immediate: true },
 )
 
 const createProjectSession = (projectName: string) => {
@@ -600,19 +570,89 @@ const sendProjectContent = async (content: string) => {
   persistAppState()
 
   let assistantMessage: ChatMessage | null = null
+  let contentFallbackBuffer = ''
+  let hasProviderReasoning = false
+  const ensureProjectAssistantMessage = () => {
+    if (!assistantMessage) {
+      assistantMessage = {
+        id: createId(),
+        role: 'assistant',
+        content: '',
+        createdAt: Date.now(),
+      }
+      session.messages.push(assistantMessage)
+      projectStreamingMessageId.value = assistantMessage.id
+      projectStreamingMessageContent.value = ''
+      projectStreamingReasoningContent.value = ''
+      projectStreamingReasoningEndedAt.value = 0
+      projectStreamingReasoningStartedAt.value = 0
+    }
+
+    return assistantMessage
+  }
+
   const reply = await chatStore.requestAssistantReply(session.messages, {
     deepThinking: isDeepThinking.value,
+    webSearch: isWebSearch.value,
+    onReasoning: (token) => {
+      hasProviderReasoning = true
+      const message = ensureProjectAssistantMessage()
+      const now = Date.now()
+      if (!projectStreamingReasoningStartedAt.value) {
+        projectStreamingReasoningStartedAt.value = now
+        message.reasoningStartedAt = now
+      }
+      projectStreamingReasoningContent.value += token
+      message.reasoningContent = projectStreamingReasoningContent.value
+      session.updatedAt = now
+    },
     onToken: (token) => {
-      if (!assistantMessage) {
-        assistantMessage = {
-          id: createId(),
-          role: 'assistant',
-          content: '',
-          createdAt: Date.now(),
+      const message = ensureProjectAssistantMessage()
+      if (isDeepThinking.value && !hasProviderReasoning) {
+        const now = Date.now()
+        contentFallbackBuffer += token
+
+        if (!projectStreamingReasoningStartedAt.value) {
+          projectStreamingReasoningStartedAt.value = message.createdAt || now
+          message.reasoningStartedAt = projectStreamingReasoningStartedAt.value
         }
-        session.messages.push(assistantMessage)
-        projectStreamingMessageId.value = assistantMessage.id
-        projectStreamingMessageContent.value = ''
+
+        const fallbackSplit = splitReasoningFromAnswer(contentFallbackBuffer)
+        const directAnswer = stripFinalAnswerMarker(contentFallbackBuffer)
+        const hasDirectAnswer = directAnswer !== contentFallbackBuffer.trimStart()
+
+        if (hasDirectAnswer) {
+          projectStreamingReasoningContent.value = ''
+          projectStreamingReasoningEndedAt.value = 0
+          projectStreamingReasoningStartedAt.value = 0
+          projectStreamingMessageContent.value = directAnswer
+          message.reasoningContent = undefined
+          message.reasoningEndedAt = undefined
+          message.reasoningStartedAt = undefined
+          message.content = directAnswer
+        } else if (fallbackSplit) {
+          if (!projectStreamingReasoningEndedAt.value) {
+            projectStreamingReasoningEndedAt.value = now
+            message.reasoningEndedAt = now
+          }
+          projectStreamingReasoningContent.value = fallbackSplit.reasoning
+          projectStreamingMessageContent.value = fallbackSplit.answer
+          message.reasoningContent = fallbackSplit.reasoning
+          message.content = fallbackSplit.answer
+        } else {
+          projectStreamingReasoningContent.value = contentFallbackBuffer
+          projectStreamingMessageContent.value = ''
+          message.reasoningContent = contentFallbackBuffer
+          message.content = ''
+        }
+
+        session.updatedAt = now
+        return
+      }
+
+      if (projectStreamingReasoningContent.value && !projectStreamingReasoningEndedAt.value) {
+        projectStreamingReasoningEndedAt.value = Date.now()
+        message.reasoningEndedAt = projectStreamingReasoningEndedAt.value
       }
       projectStreamingMessageContent.value += token
       session.updatedAt = Date.now()
@@ -628,13 +668,65 @@ const sendProjectContent = async (content: string) => {
   if (!isProjectResponding.value) return
 
   if (assistantMessage) {
-    assistantMessage.content = projectStreamingMessageContent.value
+    if (projectStreamingReasoningContent.value && !projectStreamingReasoningEndedAt.value) {
+      projectStreamingReasoningEndedAt.value = Date.now()
+    }
+    let finalContent = projectStreamingMessageContent.value
+    let finalReasoning = projectStreamingReasoningContent.value
+    let reasoningStartedAt = projectStreamingReasoningStartedAt.value
+    let reasoningEndedAt = projectStreamingReasoningEndedAt.value
+    const fallbackSource = contentFallbackBuffer || finalContent
+    const fallbackSplit =
+      isDeepThinking.value && !hasProviderReasoning ? splitReasoningFromAnswer(fallbackSource) : null
+    const directAnswer =
+      isDeepThinking.value && !hasProviderReasoning && contentFallbackBuffer ? stripFinalAnswerMarker(contentFallbackBuffer) : ''
+    const hasDirectAnswer = Boolean(directAnswer && directAnswer !== contentFallbackBuffer.trimStart())
+
+    if (hasDirectAnswer) {
+      finalContent = directAnswer
+      finalReasoning = ''
+      reasoningStartedAt = 0
+      reasoningEndedAt = 0
+    } else if (fallbackSplit) {
+      finalContent = fallbackSplit.answer
+      finalReasoning = fallbackSplit.reasoning
+      reasoningStartedAt = assistantMessage.createdAt
+      reasoningEndedAt = Date.now()
+    } else if (isDeepThinking.value && !hasProviderReasoning && contentFallbackBuffer) {
+      finalContent = contentFallbackBuffer
+      finalReasoning = ''
+      reasoningStartedAt = 0
+      reasoningEndedAt = 0
+    }
+
+    const reasoningAnswerSplit = finalReasoning.trim() && !finalContent.trim()
+      ? splitReasoningFromAnswer(finalReasoning)
+      : null
+
+    if (reasoningAnswerSplit) {
+      finalContent = reasoningAnswerSplit.answer
+      finalReasoning = reasoningAnswerSplit.reasoning
+      reasoningStartedAt = reasoningStartedAt || assistantMessage.createdAt
+      reasoningEndedAt = reasoningEndedAt || Date.now()
+    } else if (finalReasoning.trim() && !finalContent.trim()) {
+      finalContent = MISSING_FINAL_ANSWER
+    }
+
+    assistantMessage.content = finalContent
+    assistantMessage.reasoningContent = finalReasoning || undefined
+    assistantMessage.reasoningStartedAt = reasoningStartedAt || undefined
+    assistantMessage.reasoningEndedAt = reasoningEndedAt || undefined
   } else if (reply) {
+    const fallbackSplit = isDeepThinking.value ? splitReasoningFromAnswer(reply) : null
+    const createdAt = Date.now()
     assistantMessage = {
       id: createId(),
       role: 'assistant',
-      content: reply,
-      createdAt: Date.now(),
+      content: fallbackSplit?.answer ?? reply,
+      reasoningContent: fallbackSplit?.reasoning,
+      reasoningEndedAt: fallbackSplit ? createdAt : undefined,
+      reasoningStartedAt: fallbackSplit ? createdAt : undefined,
+      createdAt,
     }
     session.messages.push(assistantMessage)
   }
@@ -642,6 +734,9 @@ const sendProjectContent = async (content: string) => {
   isProjectResponding.value = false
   projectStreamingMessageContent.value = ''
   projectStreamingMessageId.value = ''
+  projectStreamingReasoningContent.value = ''
+  projectStreamingReasoningEndedAt.value = 0
+  projectStreamingReasoningStartedAt.value = 0
   persistAppState()
 }
 
@@ -668,7 +763,7 @@ const send = async () => {
     return
   }
 
-  await chatStore.sendMessage(content, { deepThinking: isDeepThinking.value })
+  await chatStore.sendMessage(content, { deepThinking: isDeepThinking.value, webSearch: isWebSearch.value })
 }
 
 const restoreInterruptedDraft = () => {
@@ -701,6 +796,9 @@ const stopResponding = () => {
   isProjectResponding.value = false
   projectStreamingMessageContent.value = ''
   projectStreamingMessageId.value = ''
+  projectStreamingReasoningContent.value = ''
+  projectStreamingReasoningEndedAt.value = 0
+  projectStreamingReasoningStartedAt.value = 0
   ElMessage.info('已终止生成')
 }
 
@@ -763,6 +861,8 @@ const highlightParts = (content: string) => {
 const createSession = () => {
   chatStore.stopResponding()
   draft.value = ''
+  isDeepThinking.value = false
+  isWebSearch.value = false
   currentMode.value = 'chat'
   activeProject.value = ''
   activeProjectSessionId.value = ''
@@ -774,6 +874,8 @@ const createSession = () => {
 
 const selectProject = (projectName: string) => {
   activeProject.value = projectName
+  isDeepThinking.value = false
+  isWebSearch.value = false
   currentMode.value = 'project'
   isProjectHome.value = true
   activeProjectSessionId.value = ''
@@ -1020,6 +1122,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', handleGlobalPointerDown, true)
+  if (liveTimer !== undefined) {
+    window.clearInterval(liveTimer)
+  }
 })
 
 const formatTime = (timestamp: number) =>
@@ -1186,6 +1291,10 @@ const formatTime = (timestamp: number) =>
                   <ChatDotRound :size="16" />
                   <span>深度思考</span>
                 </button>
+                <button type="button" :class="{ active: isWebSearch }" @click="isWebSearch = !isWebSearch">
+                  <Search :size="16" />
+                  <span>联网搜索</span>
+                </button>
               </div>
               <button v-if="isResponding" type="button" class="project-send project-stop" @click="stopResponding">
                 <span />
@@ -1211,7 +1320,7 @@ const formatTime = (timestamp: number) =>
                   <p>{{ getResultPreview(session) }}</p>
                 </div>
                 <time>{{ formatTime(session.updatedAt) }}</time>
-                <button type="button" aria-label="对话操作" @click.stop="toggleActionMenu(`home-session-${session.id}`, $event)">
+                <button class="home-row-action" type="button" aria-label="对话操作" @click.stop="toggleActionMenu(`home-session-${session.id}`, $event)">
                   <MoreFilled :size="17" />
                 </button>
                 <div v-if="openActionMenu === `home-session-${session.id}`" class="action-menu home-menu" :style="actionMenuStyle">
@@ -1253,6 +1362,10 @@ const formatTime = (timestamp: number) =>
                   <ChatDotRound :size="16" />
                   <span>深度思考</span>
                 </button>
+                <button type="button" :class="{ active: isWebSearch }" @click="isWebSearch = !isWebSearch">
+                  <Search :size="16" />
+                  <span>联网搜索</span>
+                </button>
               </div>
               <el-button
                 v-if="isResponding"
@@ -1290,10 +1403,26 @@ const formatTime = (timestamp: number) =>
                 <strong>{{ message.role === 'assistant' ? 'AI Chat' : '你' }}</strong>
                 <span>{{ formatTime(message.createdAt) }}</span>
               </div>
-              <div v-if="message.id === streamingAssistantMessageId" class="streaming-text">
-                {{ streamingAssistantMessageContent }}<span class="stream-cursor" />
+              <div v-if="message.role === 'assistant' && getReasoningContent(message)" class="reasoning-panel">
+                <button
+                  class="reasoning-toggle"
+                  type="button"
+                  :aria-expanded="isReasoningOpen(message.id)"
+                  @click="toggleReasoning(message.id)"
+                >
+                  <ChatDotRound :size="18" />
+                  <span>{{ getReasoningLabel(message) }}</span>
+                  <component class="reasoning-chevron" :is="isReasoningOpen(message.id) ? ArrowDown : ArrowRight" :size="15" />
+                </button>
+                <div v-show="isReasoningOpen(message.id)" class="reasoning-content">
+                  <div class="reasoning-markdown markdown-body" v-html="renderMarkdown(getReasoningContent(message))" />
+                </div>
               </div>
-              <div v-else class="markdown-body" v-html="renderMarkdown(message.content)" />
+              <div v-if="message.id === streamingAssistantMessageId && streamingAssistantMessageContent" class="streaming-markdown">
+                <div class="markdown-body" v-html="renderMarkdown(stripFinalAnswerMarker(streamingAssistantMessageContent))" />
+                <span class="stream-cursor" />
+              </div>
+              <div v-else-if="message.content" class="markdown-body" v-html="renderMarkdown(getAnswerContent(message))" />
             </div>
           </article>
 
@@ -1356,6 +1485,10 @@ const formatTime = (timestamp: number) =>
               <button type="button" :class="{ active: isDeepThinking }" @click="isDeepThinking = !isDeepThinking">
                 <ChatDotRound :size="16" />
                 <span>深度思考</span>
+              </button>
+              <button type="button" :class="{ active: isWebSearch }" @click="isWebSearch = !isWebSearch">
+                <Search :size="16" />
+                <span>联网搜索</span>
               </button>
             </div>
             <el-button

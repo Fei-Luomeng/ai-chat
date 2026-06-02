@@ -6,6 +6,9 @@ export interface ChatMessage {
   id: string
   role: MessageRole
   content: string
+  reasoningContent?: string
+  reasoningEndedAt?: number
+  reasoningStartedAt?: number
   createdAt: number
 }
 
@@ -18,9 +21,11 @@ export interface ChatSession {
 
 interface SendOptions {
   deepThinking?: boolean
+  webSearch?: boolean
 }
 
 interface RequestAssistantOptions extends SendOptions {
+  onReasoning?: (token: string) => void | Promise<void>
   onToken?: (token: string) => void | Promise<void>
   signal?: AbortSignal
   systemPrompt?: string
@@ -39,12 +44,59 @@ const BIGMODEL_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 const BIGMODEL_MODEL = 'glm-4.7-flash'
 const CONTEXT_MESSAGE_LIMIT = 20
 const CONTEXT_CHAR_LIMIT = 12000
+const NORMAL_OUTPUT_TOKEN_LIMIT = 4096
+const DEEP_THINKING_OUTPUT_TOKEN_LIMIT = 8192
 const SYSTEM_PROMPT = '你是 AI Chat，一个简洁、可靠的中文 AI 助手。回答要自然、清楚，优先解决用户当前问题。'
+const DEEP_THINKING_PROMPT =
+  '深度思考模式已开启。请控制思考长度，尽快输出正式回答。如果思考与回答出现在同一字段，再用“最终回答：”分隔。'
+const WEB_SEARCH_PROMPT =
+  '联网搜索已开启。需要实时信息或事实核验时，请基于网络搜索结果回答；如果使用了搜索结果，请在回答末尾用简短列表列出主要来源。'
+export const MISSING_FINAL_ANSWER =
+  '没有收到模型返回的最终回答。可以展开上面的思考过程查看已返回内容，或重新发送一次。'
 const STORAGE_KEY = 'ai-chat:sessions'
 
 const summarizeTitle = (content: string) => {
   const normalized = content.trim().replace(/\s+/g, ' ')
   return normalized.length > 18 ? `${normalized.slice(0, 18)}...` : normalized || '新的对话'
+}
+
+const finalAnswerStartPattern =
+  /^\s*(?:\d+[.、]\s*)?(?:\*\*)?(?:最终输出生成|最终回答|最终答案|最终回复|正式回答|最终结果|答案如下|回答如下)\s*[：:](?:\*\*)?\s*/
+
+export const stripFinalAnswerMarker = (content: string) => content.replace(finalAnswerStartPattern, '').trimStart()
+
+export const splitReasoningFromAnswer = (content: string) => {
+  const normalized = content.trim()
+  if (!normalized) return null
+
+  const markerPattern =
+    /(?:^|\n)\s*(?:\d+[.、]\s*)?(?:\*\*)?(优化后的回答|优化回答|最终输出生成|最终回答|最终答案|最终回复|正式回答|最终结果|答案如下|回答如下)\s*[：:](?:\*\*)?/g
+  const markerMatches = [...normalized.matchAll(markerPattern)]
+  const markerMatch = markerMatches.find((match) => match.index !== undefined && match.index > 0)
+  if (!markerMatch || markerMatch.index === undefined || markerMatch.index <= 0) return null
+
+  const markerText = markerMatch[0]
+  const markerEnd = markerMatch.index + markerText.length
+  const reasoning = normalized.slice(0, markerMatch.index).trim()
+  let answer = normalized
+    .slice(markerEnd)
+    .replace(/^\s*[（(][^）)]{0,120}[）)]\s*[。.]?\s*/, '')
+    .trim()
+  const finalMarkerPattern =
+    /(?:^|\n)\s*(?:\d+[.、]\s*)?(?:\*\*)?(最终输出生成|最终回答|最终答案|最终回复|正式回答|最终结果|答案如下|回答如下)\s*[：:](?:\*\*)?/g
+  const finalMatches = [...answer.matchAll(finalMarkerPattern)]
+  const finalMatch = finalMatches.at(-1)
+
+  if (finalMatch?.index !== undefined) {
+    answer = answer
+      .slice(finalMatch.index + finalMatch[0].length)
+      .replace(/^\s*[（(][^）)]{0,120}[）)]\s*[。.]?\s*/, '')
+      .trim()
+  }
+
+  if (!reasoning || !answer) return null
+
+  return { answer, reasoning }
 }
 
 let responseAbortController: AbortController | null = null
@@ -120,7 +172,6 @@ const getAssistantText = (data: unknown) => {
 
   return (
     getTextFromContent(message?.content) ||
-    getTextFromContent(message?.reasoning_content) ||
     getTextFromContent(choice?.content) ||
     getTextFromContent(choice?.text) ||
     getTextFromContent(response.output_text) ||
@@ -137,11 +188,20 @@ const getStreamText = (data: unknown) => {
 
   return (
     getRawTextFromContent(delta?.content) ||
-    getRawTextFromContent(delta?.reasoning_content) ||
     getRawTextFromContent(choice?.content) ||
     getRawTextFromContent(choice?.text) ||
     getRawTextFromContent(response.content)
   )
+}
+
+const getStreamReasoningText = (data: unknown) => {
+  if (!data || typeof data !== 'object') return ''
+
+  const response = data as Record<string, any>
+  const choice = response.choices?.[0] ?? response.data?.choices?.[0]
+  const delta = choice?.delta ?? choice?.message ?? response.delta ?? response.message
+
+  return getRawTextFromContent(delta?.reasoning_content)
 }
 
 const getApiErrorText = (data: unknown) => {
@@ -199,6 +259,30 @@ const buildApiMessages = (messages: ChatMessage[], systemPrompt = SYSTEM_PROMPT)
     },
     ...selected,
   ]
+}
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+
+const estimateMaxTokens = (
+  apiMessages: Array<{ role: string; content: string }>,
+  deepThinking = false,
+) => {
+  const latestUserChars = [...apiMessages].reverse().find((message) => message.role === 'user')?.content.length ?? 0
+  const contextChars = apiMessages.reduce((total, message) => total + message.content.length, 0)
+
+  if (deepThinking) {
+    return clamp(
+      6144 + Math.ceil(latestUserChars / 2) + Math.ceil(Math.min(contextChars, CONTEXT_CHAR_LIMIT) / 10),
+      4096,
+      DEEP_THINKING_OUTPUT_TOKEN_LIMIT,
+    )
+  }
+
+  return clamp(
+    2048 + Math.ceil(latestUserChars / 3) + Math.ceil(Math.min(contextChars, CONTEXT_CHAR_LIMIT) / 18),
+    1024,
+    NORMAL_OUTPUT_TOKEN_LIMIT,
+  )
 }
 
 const createStreamTypewriter = (
@@ -277,6 +361,7 @@ const emitFullTextWithTypewriter = async (
 const readStreamResponse = async (
   response: Response,
   onToken?: (token: string) => void | Promise<void>,
+  onReasoning?: (token: string) => void | Promise<void>,
   signal?: AbortSignal,
 ) => {
   if (!response.body) {
@@ -315,6 +400,11 @@ const readStreamResponse = async (
 
       try {
         const data = JSON.parse(payload)
+        const reasoning = getStreamReasoningText(data)
+        if (reasoning) {
+          await onReasoning?.(reasoning)
+        }
+
         const token = getStreamText(data)
         if (!token) continue
 
@@ -351,6 +441,9 @@ export const useChatStore = defineStore('chat', {
     isResponding: false,
     streamingMessageContent: '',
     streamingMessageId: '',
+    streamingReasoningContent: '',
+    streamingReasoningEndedAt: 0,
+    streamingReasoningStartedAt: 0,
   }),
   getters: {
     activeSession: (state) => state.sessions.find((session) => session.id === state.activeSessionId) ?? state.sessions[0],
@@ -434,19 +527,88 @@ export const useChatStore = defineStore('chat', {
       writeStoredSessions(this.sessions)
 
       let assistantMessage: ChatMessage | null = null
+      let contentFallbackBuffer = ''
+      let hasProviderReasoning = false
+      const ensureAssistantMessage = () => {
+        if (!assistantMessage) {
+          assistantMessage = {
+            id: createId(),
+            role: 'assistant',
+            content: '',
+            createdAt: Date.now(),
+          }
+          session.messages.push(assistantMessage)
+          this.streamingMessageId = assistantMessage.id
+          this.streamingMessageContent = ''
+          this.streamingReasoningContent = ''
+          this.streamingReasoningEndedAt = 0
+          this.streamingReasoningStartedAt = 0
+        }
+
+        return assistantMessage
+      }
+
       const reply = await this.requestAssistantReply(session.messages, {
         deepThinking: options.deepThinking,
+        onReasoning: (token) => {
+          hasProviderReasoning = true
+          const message = ensureAssistantMessage()
+          const now = Date.now()
+          if (!this.streamingReasoningStartedAt) {
+            this.streamingReasoningStartedAt = now
+            message.reasoningStartedAt = now
+          }
+          this.streamingReasoningContent += token
+          message.reasoningContent = this.streamingReasoningContent
+          session.updatedAt = now
+        },
         onToken: (token) => {
-          if (!assistantMessage) {
-            assistantMessage = {
-              id: createId(),
-              role: 'assistant',
-              content: '',
-              createdAt: Date.now(),
+          const message = ensureAssistantMessage()
+          if (options.deepThinking && !hasProviderReasoning) {
+            const now = Date.now()
+            contentFallbackBuffer += token
+
+            if (!this.streamingReasoningStartedAt) {
+              this.streamingReasoningStartedAt = message.createdAt || now
+              message.reasoningStartedAt = this.streamingReasoningStartedAt
             }
-            session.messages.push(assistantMessage)
-            this.streamingMessageId = assistantMessage.id
-            this.streamingMessageContent = ''
+
+            const fallbackSplit = splitReasoningFromAnswer(contentFallbackBuffer)
+            const directAnswer = stripFinalAnswerMarker(contentFallbackBuffer)
+            const hasDirectAnswer = directAnswer !== contentFallbackBuffer.trimStart()
+
+            if (hasDirectAnswer) {
+              this.streamingReasoningContent = ''
+              this.streamingReasoningEndedAt = 0
+              this.streamingReasoningStartedAt = 0
+              this.streamingMessageContent = directAnswer
+              message.reasoningContent = undefined
+              message.reasoningEndedAt = undefined
+              message.reasoningStartedAt = undefined
+              message.content = directAnswer
+            } else if (fallbackSplit) {
+              if (!this.streamingReasoningEndedAt) {
+                this.streamingReasoningEndedAt = now
+                message.reasoningEndedAt = now
+              }
+              this.streamingReasoningContent = fallbackSplit.reasoning
+              this.streamingMessageContent = fallbackSplit.answer
+              message.reasoningContent = fallbackSplit.reasoning
+              message.content = fallbackSplit.answer
+            } else {
+              this.streamingReasoningContent = contentFallbackBuffer
+              this.streamingMessageContent = ''
+              message.reasoningContent = contentFallbackBuffer
+              message.content = ''
+            }
+
+            session.updatedAt = now
+            return
+          }
+
+          if (this.streamingReasoningContent && !this.streamingReasoningEndedAt) {
+            this.streamingReasoningEndedAt = Date.now()
+            message.reasoningEndedAt = this.streamingReasoningEndedAt
           }
           this.streamingMessageContent += token
           session.updatedAt = Date.now()
@@ -457,12 +619,63 @@ export const useChatStore = defineStore('chat', {
       if (!this.isResponding) return
 
       if (assistantMessage) {
-        assistantMessage.content = this.streamingMessageContent
+        if (this.streamingReasoningContent && !this.streamingReasoningEndedAt) {
+          this.streamingReasoningEndedAt = Date.now()
+        }
+        let finalContent = this.streamingMessageContent
+        let finalReasoning = this.streamingReasoningContent
+        let reasoningStartedAt = this.streamingReasoningStartedAt
+        let reasoningEndedAt = this.streamingReasoningEndedAt
+        const fallbackSource = contentFallbackBuffer || finalContent
+        const fallbackSplit =
+          options.deepThinking && !hasProviderReasoning ? splitReasoningFromAnswer(fallbackSource) : null
+        const directAnswer =
+          options.deepThinking && !hasProviderReasoning && contentFallbackBuffer ? stripFinalAnswerMarker(contentFallbackBuffer) : ''
+        const hasDirectAnswer = Boolean(directAnswer && directAnswer !== contentFallbackBuffer.trimStart())
+
+        if (hasDirectAnswer) {
+          finalContent = directAnswer
+          finalReasoning = ''
+          reasoningStartedAt = 0
+          reasoningEndedAt = 0
+        } else if (fallbackSplit) {
+          finalContent = fallbackSplit.answer
+          finalReasoning = fallbackSplit.reasoning
+          reasoningStartedAt = assistantMessage.createdAt
+          reasoningEndedAt = Date.now()
+        } else if (options.deepThinking && !hasProviderReasoning && contentFallbackBuffer) {
+          finalContent = contentFallbackBuffer
+          finalReasoning = ''
+          reasoningStartedAt = 0
+          reasoningEndedAt = 0
+        }
+
+        const reasoningAnswerSplit = finalReasoning.trim() && !finalContent.trim()
+          ? splitReasoningFromAnswer(finalReasoning)
+          : null
+
+        if (reasoningAnswerSplit) {
+          finalContent = reasoningAnswerSplit.answer
+          finalReasoning = reasoningAnswerSplit.reasoning
+          reasoningStartedAt = reasoningStartedAt || assistantMessage.createdAt
+          reasoningEndedAt = reasoningEndedAt || Date.now()
+        } else if (finalReasoning.trim() && !finalContent.trim()) {
+          finalContent = MISSING_FINAL_ANSWER
+        }
+
+        assistantMessage.content = finalContent
+        assistantMessage.reasoningContent = finalReasoning || undefined
+        assistantMessage.reasoningStartedAt = reasoningStartedAt || undefined
+        assistantMessage.reasoningEndedAt = reasoningEndedAt || undefined
       } else if (reply) {
+        const fallbackSplit = options.deepThinking ? splitReasoningFromAnswer(reply) : null
         assistantMessage = {
           id: createId(),
           role: 'assistant',
-          content: reply,
+          content: fallbackSplit?.answer ?? reply,
+          reasoningContent: fallbackSplit?.reasoning,
+          reasoningEndedAt: fallbackSplit ? Date.now() : undefined,
+          reasoningStartedAt: fallbackSplit ? Date.now() : undefined,
           createdAt: Date.now(),
         }
         session.messages.push(assistantMessage)
@@ -471,6 +684,9 @@ export const useChatStore = defineStore('chat', {
       this.isResponding = false
       this.streamingMessageContent = ''
       this.streamingMessageId = ''
+      this.streamingReasoningContent = ''
+      this.streamingReasoningEndedAt = 0
+      this.streamingReasoningStartedAt = 0
       writeStoredSessions(this.sessions)
     },
     stopResponding() {
@@ -480,6 +696,9 @@ export const useChatStore = defineStore('chat', {
       this.isResponding = false
       this.streamingMessageContent = ''
       this.streamingMessageId = ''
+      this.streamingReasoningContent = ''
+      this.streamingReasoningEndedAt = 0
+      this.streamingReasoningStartedAt = 0
     },
     async requestAssistantReply(messages: ChatMessage[], options: RequestAssistantOptions = {}) {
       if (!BIGMODEL_API_KEY) {
@@ -488,7 +707,31 @@ export const useChatStore = defineStore('chat', {
         return message
       }
 
-      const apiMessages = buildApiMessages(messages, options.systemPrompt)
+      const systemPrompt = [
+        options.systemPrompt ?? SYSTEM_PROMPT,
+        options.deepThinking ? DEEP_THINKING_PROMPT : '',
+        options.webSearch ? WEB_SEARCH_PROMPT : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+      const apiMessages = buildApiMessages(messages, systemPrompt)
+      const maxTokens = estimateMaxTokens(apiMessages, options.deepThinking)
+      const tools = options.webSearch
+        ? [
+            {
+              type: 'web_search',
+              web_search: {
+                enable: true,
+                search_engine: 'search_std',
+                search_result: true,
+                search_prompt:
+                  '请用简洁的语言总结网络搜索结果 {search_result} 中和用户问题最相关的信息，优先使用最新、可信的来源。今天的日期是 ' +
+                  new Date().toLocaleDateString('zh-CN') +
+                  '。',
+              },
+            },
+          ]
+        : undefined
 
       try {
         const response = await fetch(BIGMODEL_API_URL, {
@@ -503,8 +746,10 @@ export const useChatStore = defineStore('chat', {
             messages: apiMessages,
             thinking: {
               type: options.deepThinking ? 'enabled' : 'disabled',
+              clear_thinking: true,
             },
-            max_tokens: 1024,
+            ...(tools ? { tools } : {}),
+            max_tokens: maxTokens,
             stream: true,
             temperature: 1,
           }),
@@ -515,7 +760,7 @@ export const useChatStore = defineStore('chat', {
           throw new Error(await readErrorResponse(response))
         }
 
-        const reply = await readStreamResponse(response, options.onToken, options.signal)
+        const reply = await readStreamResponse(response, options.onToken, options.onReasoning, options.signal)
         if (reply) return reply
 
         console.warn('GLM response without readable content')
