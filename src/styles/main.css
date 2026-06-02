@@ -1350,11 +1350,28 @@ button {
   font-weight: 600;
 }
 
-.composer-tools button:hover,
-.composer-tools button.active {
+.composer-tools button:hover {
   color: #2f63ff;
-  background: #eef4ff;
+  background: #f6f8ff;
   border-color: #a9c0ff;
+}
+
+.composer-tools button.active,
+.composer-tools button[aria-pressed="true"] {
+  color: #ffffff;
+  background: #2f63ff;
+  border-color: #2f63ff;
+}
+
+.composer-tools button:disabled {
+  cursor: not-allowed;
+  color: #9a9a9a;
+  background: #f3f3f3;
+  border-color: #dddddd;
+}
+
+.text-file-input {
+  display: none;
 }
 
 .composer-hint {
@@ -1857,9 +1874,15 @@ mark {
 }
 
 .theme-dark .message-row.user .message-content,
-.theme-dark .composer-tools button:hover,
-.theme-dark .composer-tools button.active {
+.theme-dark .composer-tools button:hover {
   background: #303030;
+}
+
+.theme-dark .composer-tools button.active,
+.theme-dark .composer-tools button[aria-pressed="true"] {
+  color: #ffffff;
+  background: #2f63ff;
+  border-color: #2f63ff;
 }
 
 .theme-dark .markdown-body hr,

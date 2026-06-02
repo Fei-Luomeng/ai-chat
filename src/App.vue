@@ -40,6 +40,9 @@ interface PersistedAppState {
 }
 
 const APP_STORAGE_KEY = 'ai-chat:app-state'
+const TOOL_STATE_KEY = 'ai-chat:tool-state'
+const TEXT_FILE_CHAR_LIMIT = 60000
+const FILE_PARSE_SIZE_LIMIT = 20 * 1024 * 1024
 const LEGACY_WELCOME_CONTENT = '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。'
 
 const normalizeMessages = (messages: ChatMessage[]) =>
@@ -70,10 +73,22 @@ const readAppState = (): PersistedAppState => {
   }
 }
 
+const readToolState = () => {
+  try {
+    const stored = window.localStorage?.getItem(TOOL_STATE_KEY)
+    return stored ? JSON.parse(stored) : {}
+  } catch {
+    return {}
+  }
+}
+
 const chatStore = useChatStore()
 const storedAppState = readAppState()
+const storedToolState = readToolState()
 const draft = ref('')
 const messagesRef = ref<HTMLElement | null>(null)
+const textFileInputRef = ref<HTMLInputElement | null>(null)
+const isParsingFile = ref(false)
 const isSidebarCollapsed = ref(false)
 const isSearchOpen = ref(false)
 const searchText = ref('')
@@ -93,7 +108,8 @@ const projectStreamingReasoningContent = ref('')
 const projectStreamingReasoningEndedAt = ref(0)
 const projectStreamingReasoningStartedAt = ref(0)
 const isDeepThinking = ref(false)
-const isWebSearch = ref(false)
+const isAgentMode = ref(Boolean(storedToolState.agentMode))
+const isWebSearch = ref(Boolean(storedToolState.webSearch))
 const liveNow = ref(Date.now())
 const activeMessageId = ref('')
 const collapsedReasoning = ref<Record<string, boolean>>({})
@@ -469,6 +485,147 @@ const getReasoningLabel = (message: ChatMessage) => {
   return '已思考'
 }
 
+const toggleDeepThinking = () => {
+  isDeepThinking.value = !isDeepThinking.value
+}
+
+const toggleAgentMode = () => {
+  isAgentMode.value = !isAgentMode.value
+  persistToolState()
+  if (import.meta.env.DEV) {
+    console.info(`Agent mode toggled: ${isAgentMode.value}`)
+  }
+}
+
+const toggleWebSearch = () => {
+  isWebSearch.value = !isWebSearch.value
+  persistToolState()
+  if (import.meta.env.DEV) {
+    console.info(`Web search toggled: ${isWebSearch.value}`)
+  }
+}
+
+const persistToolState = () => {
+  try {
+    window.localStorage?.setItem(
+      TOOL_STATE_KEY,
+      JSON.stringify({
+        agentMode: isAgentMode.value,
+        webSearch: isWebSearch.value,
+      }),
+    )
+  } catch {
+    // Tool state persistence is best-effort only.
+  }
+}
+
+const isToolButtonPressed = (tool: string) => {
+  if (typeof document === 'undefined') return false
+
+  return Boolean(document.querySelector(`.composer-tools button[data-tool="${tool}"][aria-pressed="true"]`))
+}
+
+const getSendOptions = () => ({
+  agentMode: isAgentMode.value || isToolButtonPressed('agent-mode'),
+  deepThinking: isDeepThinking.value || isToolButtonPressed('deep-thinking'),
+  webSearch: isWebSearch.value || isToolButtonPressed('web-search'),
+})
+
+const getTextFileLanguage = (fileName: string) => {
+  const extension = fileName.split('.').pop()?.toLowerCase() ?? ''
+  const languageMap: Record<string, string> = {
+    css: 'css',
+    csv: 'csv',
+    html: 'html',
+    js: 'javascript',
+    json: 'json',
+    jsx: 'javascript',
+    less: 'css',
+    log: 'text',
+    markdown: 'markdown',
+    md: 'markdown',
+    scss: 'css',
+    ts: 'typescript',
+    tsx: 'typescript',
+    txt: 'text',
+    vue: 'vue',
+    xml: 'xml',
+    yaml: 'yaml',
+    yml: 'yaml',
+  }
+
+  return languageMap[extension] ?? 'text'
+}
+
+const getMarkdownFence = (content: string) => {
+  let fence = '```'
+
+  while (content.includes(fence)) {
+    fence += '`'
+  }
+
+  return fence
+}
+
+const openTextFilePicker = () => {
+  if (isParsingFile.value) return
+  textFileInputRef.value?.click()
+}
+
+const appendRecognizedTextToDraft = (file: File, content: string) => {
+  const trimmedContent = content.trim()
+  const normalizedContent =
+    trimmedContent.length > TEXT_FILE_CHAR_LIMIT
+      ? `${trimmedContent.slice(0, TEXT_FILE_CHAR_LIMIT)}\n\n[内容过长，已截取前 ${TEXT_FILE_CHAR_LIMIT} 个字符]`
+      : trimmedContent
+  const language = getTextFileLanguage(file.name)
+  const fence = getMarkdownFence(normalizedContent)
+  const recognizedText = [
+    `请基于下面这个文件解析结果进行分析。`,
+    '',
+    `文件名：${file.name}`,
+    `文件大小：${Math.ceil(file.size / 1024)} KB`,
+    `解析方式：智谱文件解析`,
+    '',
+    `${fence}${language}`,
+    normalizedContent,
+    fence,
+  ].join('\n')
+  const currentDraft = draft.value.trim()
+
+  draft.value = currentDraft ? `${currentDraft}\n\n${recognizedText}` : recognizedText
+}
+
+const handleTextFileUpload = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+
+  if (!file) return
+
+  if (file.size > FILE_PARSE_SIZE_LIMIT) {
+    ElMessage.warning('文件太大了，当前文件解析先支持 20MB 以内的文件。')
+    return
+  }
+
+  isParsingFile.value = true
+  try {
+    const content = await chatStore.parseFileContent(file)
+    if (!content.trim()) {
+      ElMessage.warning('没有识别到可用文本内容。')
+      return
+    }
+
+    appendRecognizedTextToDraft(file, content)
+    ElMessage.success(`文件解析完成：${file.name}`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '文件解析失败，请稍后重试。'
+    ElMessage.error(message)
+  } finally {
+    isParsingFile.value = false
+  }
+}
+
 const showNavigatorTooltip = (
   item: { fullLabel: string },
   event: MouseEvent,
@@ -546,7 +703,7 @@ const createProjectSession = (projectName: string) => {
   return session
 }
 
-const sendProjectContent = async (content: string) => {
+const sendProjectContent = async (content: string, sendOptions = getSendOptions()) => {
   const session = activeProjectSession.value
   const trimmedContent = content.trim()
   if (!session || !trimmedContent || isProjectResponding.value) return
@@ -592,8 +749,9 @@ const sendProjectContent = async (content: string) => {
   }
 
   const reply = await chatStore.requestAssistantReply(session.messages, {
-    deepThinking: isDeepThinking.value,
-    webSearch: isWebSearch.value,
+    agentMode: sendOptions.agentMode,
+    deepThinking: sendOptions.deepThinking,
+    webSearch: sendOptions.webSearch,
     onReasoning: (token) => {
       hasProviderReasoning = true
       const message = ensureProjectAssistantMessage()
@@ -608,7 +766,7 @@ const sendProjectContent = async (content: string) => {
     },
     onToken: (token) => {
       const message = ensureProjectAssistantMessage()
-      if (isDeepThinking.value && !hasProviderReasoning) {
+      if (sendOptions.deepThinking && !hasProviderReasoning) {
         const now = Date.now()
         contentFallbackBuffer += token
 
@@ -677,9 +835,9 @@ const sendProjectContent = async (content: string) => {
     let reasoningEndedAt = projectStreamingReasoningEndedAt.value
     const fallbackSource = contentFallbackBuffer || finalContent
     const fallbackSplit =
-      isDeepThinking.value && !hasProviderReasoning ? splitReasoningFromAnswer(fallbackSource) : null
+      sendOptions.deepThinking && !hasProviderReasoning ? splitReasoningFromAnswer(fallbackSource) : null
     const directAnswer =
-      isDeepThinking.value && !hasProviderReasoning && contentFallbackBuffer ? stripFinalAnswerMarker(contentFallbackBuffer) : ''
+      sendOptions.deepThinking && !hasProviderReasoning && contentFallbackBuffer ? stripFinalAnswerMarker(contentFallbackBuffer) : ''
     const hasDirectAnswer = Boolean(directAnswer && directAnswer !== contentFallbackBuffer.trimStart())
 
     if (hasDirectAnswer) {
@@ -692,7 +850,7 @@ const sendProjectContent = async (content: string) => {
       finalReasoning = fallbackSplit.reasoning
       reasoningStartedAt = assistantMessage.createdAt
       reasoningEndedAt = Date.now()
-    } else if (isDeepThinking.value && !hasProviderReasoning && contentFallbackBuffer) {
+    } else if (sendOptions.deepThinking && !hasProviderReasoning && contentFallbackBuffer) {
       finalContent = contentFallbackBuffer
       finalReasoning = ''
       reasoningStartedAt = 0
@@ -717,7 +875,7 @@ const sendProjectContent = async (content: string) => {
     assistantMessage.reasoningStartedAt = reasoningStartedAt || undefined
     assistantMessage.reasoningEndedAt = reasoningEndedAt || undefined
   } else if (reply) {
-    const fallbackSplit = isDeepThinking.value ? splitReasoningFromAnswer(reply) : null
+    const fallbackSplit = sendOptions.deepThinking ? splitReasoningFromAnswer(reply) : null
     const createdAt = Date.now()
     assistantMessage = {
       id: createId(),
@@ -744,6 +902,7 @@ const send = async () => {
   if (!hasDraft.value) return
 
   const content = draft.value
+  const sendOptions = getSendOptions()
   draft.value = ''
 
   if (isPendingNewSession.value) {
@@ -754,16 +913,16 @@ const send = async () => {
   if (isPendingProjectSession.value && activeProject.value) {
     createProjectSession(activeProject.value)
     isPendingProjectSession.value = false
-    await sendProjectContent(content)
+    await sendProjectContent(content, sendOptions)
     return
   }
 
   if (activeProjectSession.value) {
-    await sendProjectContent(content)
+    await sendProjectContent(content, sendOptions)
     return
   }
 
-  await chatStore.sendMessage(content, { deepThinking: isDeepThinking.value, webSearch: isWebSearch.value })
+  await chatStore.sendMessage(content, sendOptions)
 }
 
 const restoreInterruptedDraft = () => {
@@ -862,7 +1021,9 @@ const createSession = () => {
   chatStore.stopResponding()
   draft.value = ''
   isDeepThinking.value = false
+  isAgentMode.value = false
   isWebSearch.value = false
+  persistToolState()
   currentMode.value = 'chat'
   activeProject.value = ''
   activeProjectSessionId.value = ''
@@ -875,7 +1036,9 @@ const createSession = () => {
 const selectProject = (projectName: string) => {
   activeProject.value = projectName
   isDeepThinking.value = false
+  isAgentMode.value = false
   isWebSearch.value = false
+  persistToolState()
   currentMode.value = 'project'
   isProjectHome.value = true
   activeProjectSessionId.value = ''
@@ -900,6 +1063,7 @@ const sendProjectMessage = async () => {
 
   const content = draft.value.trim()
   if (!content) return
+  const sendOptions = getSendOptions()
 
   createProjectSession(activeProject.value)
   currentMode.value = 'project'
@@ -908,7 +1072,7 @@ const sendProjectMessage = async () => {
   isPendingProjectSession.value = false
 
   draft.value = ''
-  await sendProjectContent(content)
+  await sendProjectContent(content, sendOptions)
 }
 
 const toggleActionMenu = (menuId: string, event?: MouseEvent) => {
@@ -1142,6 +1306,13 @@ const formatTime = (timestamp: number) =>
       'theme-dark': themeMode === 'dark',
     }"
   >
+    <input
+      ref="textFileInputRef"
+      class="text-file-input"
+      type="file"
+      accept=".txt,.md,.markdown,.csv,.json,.js,.jsx,.ts,.tsx,.vue,.html,.css,.scss,.less,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.gif,text/*,application/json,application/pdf,image/*"
+      @change="handleTextFileUpload"
+    />
     <aside class="sidebar">
       <div class="sidebar-top">
         <button class="sidebar-icon-button" type="button" aria-label="搜索" @click="openSearch">
@@ -1287,11 +1458,42 @@ const formatTime = (timestamp: number) =>
                 @keydown.enter.exact.prevent="sendProjectMessage"
               />
               <div class="composer-tools project-tools">
-                <button type="button" :class="{ active: isDeepThinking }" @click="isDeepThinking = !isDeepThinking">
+                <button
+                  type="button"
+                  data-tool="deep-thinking"
+                  :aria-pressed="isDeepThinking"
+                  :class="{ active: isDeepThinking }"
+                  @click="toggleDeepThinking"
+                >
                   <ChatDotRound :size="16" />
                   <span>深度思考</span>
                 </button>
-                <button type="button" :class="{ active: isWebSearch }" @click="isWebSearch = !isWebSearch">
+                <button
+                  type="button"
+                  data-tool="agent-mode"
+                  :aria-pressed="isAgentMode"
+                  :class="{ active: isAgentMode }"
+                  @click="toggleAgentMode"
+                >
+                  <Setting :size="16" />
+                  <span>Agent 模式</span>
+                </button>
+                <button
+                  type="button"
+                  data-tool="file-parser"
+                  :disabled="isParsingFile"
+                  @click="openTextFilePicker"
+                >
+                  <Plus :size="16" />
+                  <span>{{ isParsingFile ? '解析中' : '文件解析' }}</span>
+                </button>
+                <button
+                  type="button"
+                  data-tool="web-search"
+                  :aria-pressed="isWebSearch"
+                  :class="{ active: isWebSearch }"
+                  @click="toggleWebSearch"
+                >
                   <Search :size="16" />
                   <span>联网搜索</span>
                 </button>
@@ -1358,11 +1560,42 @@ const formatTime = (timestamp: number) =>
                 @keydown.enter.exact.prevent="send"
               />
               <div class="composer-tools">
-                <button type="button" :class="{ active: isDeepThinking }" @click="isDeepThinking = !isDeepThinking">
+                <button
+                  type="button"
+                  data-tool="deep-thinking"
+                  :aria-pressed="isDeepThinking"
+                  :class="{ active: isDeepThinking }"
+                  @click="toggleDeepThinking"
+                >
                   <ChatDotRound :size="16" />
                   <span>深度思考</span>
                 </button>
-                <button type="button" :class="{ active: isWebSearch }" @click="isWebSearch = !isWebSearch">
+                <button
+                  type="button"
+                  data-tool="agent-mode"
+                  :aria-pressed="isAgentMode"
+                  :class="{ active: isAgentMode }"
+                  @click="toggleAgentMode"
+                >
+                  <Setting :size="16" />
+                  <span>Agent 模式</span>
+                </button>
+                <button
+                  type="button"
+                  data-tool="file-parser"
+                  :disabled="isParsingFile"
+                  @click="openTextFilePicker"
+                >
+                  <Plus :size="16" />
+                  <span>{{ isParsingFile ? '解析中' : '文件解析' }}</span>
+                </button>
+                <button
+                  type="button"
+                  data-tool="web-search"
+                  :aria-pressed="isWebSearch"
+                  :class="{ active: isWebSearch }"
+                  @click="toggleWebSearch"
+                >
                   <Search :size="16" />
                   <span>联网搜索</span>
                 </button>
@@ -1482,11 +1715,42 @@ const formatTime = (timestamp: number) =>
               @keydown.enter.exact.prevent="send"
             />
             <div class="composer-tools">
-              <button type="button" :class="{ active: isDeepThinking }" @click="isDeepThinking = !isDeepThinking">
+              <button
+                type="button"
+                data-tool="deep-thinking"
+                :aria-pressed="isDeepThinking"
+                :class="{ active: isDeepThinking }"
+                @click="toggleDeepThinking"
+              >
                 <ChatDotRound :size="16" />
                 <span>深度思考</span>
               </button>
-              <button type="button" :class="{ active: isWebSearch }" @click="isWebSearch = !isWebSearch">
+              <button
+                type="button"
+                data-tool="agent-mode"
+                :aria-pressed="isAgentMode"
+                :class="{ active: isAgentMode }"
+                @click="toggleAgentMode"
+              >
+                <Setting :size="16" />
+                <span>Agent 模式</span>
+              </button>
+              <button
+                type="button"
+                data-tool="file-parser"
+                :disabled="isParsingFile"
+                @click="openTextFilePicker"
+              >
+                <Plus :size="16" />
+                <span>{{ isParsingFile ? '解析中' : '文件解析' }}</span>
+              </button>
+              <button
+                type="button"
+                data-tool="web-search"
+                :aria-pressed="isWebSearch"
+                :class="{ active: isWebSearch }"
+                @click="toggleWebSearch"
+              >
                 <Search :size="16" />
                 <span>联网搜索</span>
               </button>

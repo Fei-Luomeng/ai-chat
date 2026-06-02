@@ -21,6 +21,7 @@ export interface ChatSession {
 
 interface SendOptions {
   deepThinking?: boolean
+  agentMode?: boolean
   webSearch?: boolean
 }
 
@@ -41,6 +42,7 @@ const welcomeMessage: ChatMessage = {
 const createId = () => crypto.randomUUID()
 const BIGMODEL_API_KEY = 'b236db0425f94a2db8743cf915e12c3f.FE9eFM5sv1BMn5OU'
 const BIGMODEL_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+const BIGMODEL_FILE_PARSER_URL = 'https://open.bigmodel.cn/api/paas/v4/files/parser/sync'
 const BIGMODEL_MODEL = 'glm-4.7-flash'
 const CONTEXT_MESSAGE_LIMIT = 20
 const CONTEXT_CHAR_LIMIT = 12000
@@ -51,9 +53,33 @@ const DEEP_THINKING_PROMPT =
   '深度思考模式已开启。请控制思考长度，尽快输出正式回答。如果思考与回答出现在同一字段，再用“最终回答：”分隔。'
 const WEB_SEARCH_PROMPT =
   '联网搜索已开启。需要实时信息或事实核验时，请基于网络搜索结果回答；如果使用了搜索结果，请在回答末尾用简短列表列出主要来源。'
+const AGENT_MODE_PROMPT =
+  'Agent 模式已开启。你可以按需调用可用工具获取确定结果。工具返回后，请基于工具结果给出自然、简洁的最终回答，不要暴露内部工具 JSON。'
 export const MISSING_FINAL_ANSWER =
   '没有收到模型返回的最终回答。可以展开上面的思考过程查看已返回内容，或重新发送一次。'
 const STORAGE_KEY = 'ai-chat:sessions'
+const TOOL_STATE_KEY = 'ai-chat:tool-state'
+
+type ApiMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+  tool_call_id?: string
+  tool_calls?: AgentToolCall[]
+}
+
+type AgentToolCall = {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
+type StreamReply = {
+  text: string
+  toolCalls: AgentToolCall[]
+}
 
 const summarizeTitle = (content: string) => {
   const normalized = content.trim().replace(/\s+/g, ' ')
@@ -134,6 +160,30 @@ const writeStoredSessions = (sessions: ChatSession[]) => {
   }
 }
 
+const readStoredWebSearchEnabled = () => {
+  try {
+    if (typeof window === 'undefined') return false
+    const stored = window.localStorage?.getItem(TOOL_STATE_KEY)
+    if (!stored) return false
+
+    return Boolean(JSON.parse(stored)?.webSearch)
+  } catch {
+    return false
+  }
+}
+
+const readStoredAgentModeEnabled = () => {
+  try {
+    if (typeof window === 'undefined') return false
+    const stored = window.localStorage?.getItem(TOOL_STATE_KEY)
+    if (!stored) return false
+
+    return Boolean(JSON.parse(stored)?.agentMode)
+  } catch {
+    return false
+  }
+}
+
 const getTextFromContent = (content: unknown) => {
   if (typeof content === 'string') return content.trim()
   if (!Array.isArray(content)) return ''
@@ -179,6 +229,38 @@ const getAssistantText = (data: unknown) => {
   )
 }
 
+const getParsedFileText = (data: unknown): string => {
+  if (typeof data === 'string') return data.trim()
+  if (!data || typeof data !== 'object') return ''
+  if (Array.isArray(data)) {
+    return data.map(getParsedFileText).filter(Boolean).join('\n\n').trim()
+  }
+
+  const response = data as Record<string, any>
+  const directText =
+    getTextFromContent(response.content) ||
+    getTextFromContent(response.text) ||
+    getTextFromContent(response.markdown) ||
+    getTextFromContent(response.result) ||
+    getTextFromContent(response.data?.content) ||
+    getTextFromContent(response.data?.text) ||
+    getTextFromContent(response.data?.markdown) ||
+    getTextFromContent(response.data?.result)
+
+  if (directText) return directText
+
+  return [
+    getParsedFileText(response.data?.pages),
+    getParsedFileText(response.data?.documents),
+    getParsedFileText(response.pages),
+    getParsedFileText(response.documents),
+    getParsedFileText(response.results),
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+    .trim()
+}
+
 const getStreamText = (data: unknown) => {
   if (!data || typeof data !== 'object') return ''
 
@@ -204,6 +286,58 @@ const getStreamReasoningText = (data: unknown) => {
   return getRawTextFromContent(delta?.reasoning_content)
 }
 
+const normalizeToolCall = (call: any, fallbackIndex = 0): AgentToolCall => ({
+  id: getRawTextFromContent(call?.id) || `tool-call-${fallbackIndex}`,
+  type: 'function',
+  function: {
+    name: getRawTextFromContent(call?.function?.name),
+    arguments: getRawTextFromContent(call?.function?.arguments),
+  },
+})
+
+const getToolCallsFromData = (data: unknown) => {
+  if (!data || typeof data !== 'object') return []
+
+  const response = data as Record<string, any>
+  const choice = response.choices?.[0] ?? response.data?.choices?.[0]
+  const delta = choice?.delta ?? choice?.message ?? response.delta ?? response.message
+  const toolCalls = delta?.tool_calls ?? choice?.tool_calls ?? response.tool_calls ?? response.data?.tool_calls
+
+  if (!Array.isArray(toolCalls)) return []
+
+  return toolCalls.map((call, index) => ({
+    index: typeof call?.index === 'number' ? call.index : index,
+    id: getRawTextFromContent(call?.id),
+    type: getRawTextFromContent(call?.type),
+    name: getRawTextFromContent(call?.function?.name),
+    arguments: getRawTextFromContent(call?.function?.arguments),
+  }))
+}
+
+const appendToolCallChunks = (
+  toolCalls: AgentToolCall[],
+  chunks: Array<{ index: number; id: string; type: string; name: string; arguments: string }>,
+) => {
+  for (const chunk of chunks) {
+    const current =
+      toolCalls[chunk.index] ??
+      ({
+        id: chunk.id || `tool-call-${chunk.index}`,
+        type: 'function',
+        function: {
+          name: '',
+          arguments: '',
+        },
+      } satisfies AgentToolCall)
+
+    current.id = chunk.id || current.id
+    current.type = 'function'
+    current.function.name = chunk.name || current.function.name
+    current.function.arguments += chunk.arguments
+    toolCalls[chunk.index] = current
+  }
+}
+
 const getApiErrorText = (data: unknown) => {
   if (!data || typeof data !== 'object') return ''
 
@@ -218,6 +352,202 @@ const getApiErrorText = (data: unknown) => {
   )
 }
 
+const buildWebSearchTools = (enabled: boolean) => [
+  {
+    type: 'web_search',
+    web_search: {
+      enable: enabled,
+      search_engine: 'search_std',
+      search_result: true,
+      count: 5,
+      content_size: 'medium',
+      search_recency_filter: 'noLimit',
+      search_prompt:
+        '请用简洁的语言总结网络搜索结果 {search_result} 中和用户问题最相关的信息，优先使用最新、可信的来源。今天的日期是 ' +
+        new Date().toLocaleDateString('zh-CN') +
+        '。',
+    },
+  },
+]
+
+const buildAgentFunctionTools = (enabled: boolean) =>
+  enabled
+    ? [
+        {
+          type: 'function',
+          function: {
+            name: 'get_current_time',
+            description: '获取用户本地当前日期、时间和时区。',
+            parameters: {
+              type: 'object',
+              properties: {},
+              required: [],
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'calculate_expression',
+            description: '计算一个只包含数字、括号和四则运算符的表达式。',
+            parameters: {
+              type: 'object',
+              properties: {
+                expression: {
+                  type: 'string',
+                  description: '要计算的表达式，例如 "12 * (3 + 4) / 2"。',
+                },
+              },
+              required: ['expression'],
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'summarize_conversation',
+            description: '总结当前对话中最近几条消息，适合用户要求回顾上下文时使用。',
+            parameters: {
+              type: 'object',
+              properties: {
+                limit: {
+                  type: 'number',
+                  description: '需要总结的最近消息数量，默认 6，最大 12。',
+                },
+              },
+              required: [],
+            },
+          },
+        },
+      ]
+    : []
+
+const buildRequestTools = (webSearchEnabled: boolean, agentModeEnabled: boolean) => [
+  ...buildWebSearchTools(webSearchEnabled),
+  ...buildAgentFunctionTools(agentModeEnabled),
+]
+
+const parseToolArguments = (rawArguments: string) => {
+  try {
+    return rawArguments ? JSON.parse(rawArguments) : {}
+  } catch {
+    return {}
+  }
+}
+
+const calculateExpression = (expression: unknown) => {
+  const normalized = String(expression ?? '').trim()
+  if (!normalized) throw new Error('缺少 expression 参数。')
+  if (normalized.length > 120) throw new Error('表达式太长。')
+  if (!/^[\d+\-*/().%\s]+$/.test(normalized)) {
+    throw new Error('只支持数字、括号和 + - * / % 运算符。')
+  }
+
+  const value = Function(`"use strict"; return (${normalized})`)()
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('表达式结果不是有效数字。')
+  }
+
+  return value
+}
+
+const executeAgentTool = (toolCall: AgentToolCall, messages: ChatMessage[]) => {
+  const args = parseToolArguments(toolCall.function.arguments)
+
+  try {
+    if (toolCall.function.name === 'get_current_time') {
+      const now = new Date()
+      return JSON.stringify({
+        ok: true,
+        time: now.toLocaleString('zh-CN'),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        timestamp: now.toISOString(),
+      })
+    }
+
+    if (toolCall.function.name === 'calculate_expression') {
+      return JSON.stringify({
+        ok: true,
+        expression: args.expression,
+        result: calculateExpression(args.expression),
+      })
+    }
+
+    if (toolCall.function.name === 'summarize_conversation') {
+      const limit = clamp(Number(args.limit) || 6, 1, 12)
+      const recentMessages = messages.slice(-limit).map((message) => ({
+        role: message.role,
+        content: message.content.slice(0, 500),
+      }))
+
+      return JSON.stringify({
+        ok: true,
+        messages: recentMessages,
+      })
+    }
+
+    return JSON.stringify({
+      ok: false,
+      error: `未知工具：${toolCall.function.name}`,
+    })
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+const getBigModelFileType = (fileName: string) => {
+  const extension = fileName.split('.').pop()?.toLowerCase() ?? ''
+  const fileTypeMap: Record<string, string> = {
+    bmp: 'BMP',
+    csv: 'CSV',
+    css: 'TXT',
+    doc: 'DOC',
+    docx: 'DOCX',
+    eps: 'EPS',
+    gif: 'GIF',
+    heic: 'HEIC',
+    heif: 'HEIF',
+    html: 'HTML',
+    icns: 'ICNS',
+    im: 'IM',
+    jpeg: 'JPEG',
+    jpg: 'JPG',
+    js: 'TXT',
+    json: 'TXT',
+    jp2: 'JP2',
+    jsx: 'TXT',
+    less: 'TXT',
+    log: 'TXT',
+    markdown: 'MD',
+    md: 'MD',
+    pcx: 'PCX',
+    pdf: 'PDF',
+    png: 'PNG',
+    ppm: 'PPM',
+    ppt: 'PPT',
+    pptx: 'PPTX',
+    scss: 'TXT',
+    tiff: 'TIFF',
+    ts: 'TXT',
+    tsx: 'TXT',
+    txt: 'TXT',
+    vue: 'TXT',
+    webp: 'WEBP',
+    wps: 'WPS',
+    xbm: 'XBM',
+    xls: 'XLS',
+    xlsx: 'XLSX',
+    xml: 'TXT',
+    yaml: 'TXT',
+    yml: 'TXT',
+  }
+
+  return fileTypeMap[extension] ?? 'TXT'
+}
+
 const readErrorResponse = async (response: Response) => {
   const rawText = await response.text()
   if (!rawText) return `请求失败：${response.status}`
@@ -230,12 +560,12 @@ const readErrorResponse = async (response: Response) => {
   }
 }
 
-const buildApiMessages = (messages: ChatMessage[], systemPrompt = SYSTEM_PROMPT) => {
+const buildApiMessages = (messages: ChatMessage[], systemPrompt = SYSTEM_PROMPT): ApiMessage[] => {
   const conversation = messages
     .filter((message) => message.role === 'user' || message.role === 'assistant')
     .filter((message, index) => !(index === 0 && message.role === 'assistant' && message.content === welcomeMessage.content))
 
-  const selected: Array<{ role: MessageRole; content: string }> = []
+  const selected: ApiMessage[] = []
   let totalChars = 0
 
   for (const message of conversation.slice(-CONTEXT_MESSAGE_LIMIT).reverse()) {
@@ -264,7 +594,7 @@ const buildApiMessages = (messages: ChatMessage[], systemPrompt = SYSTEM_PROMPT)
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
 const estimateMaxTokens = (
-  apiMessages: Array<{ role: string; content: string }>,
+  apiMessages: ApiMessage[],
   deepThinking = false,
 ) => {
   const latestUserChars = [...apiMessages].reverse().find((message) => message.role === 'user')?.content.length ?? 0
@@ -368,7 +698,22 @@ const readStreamResponse = async (
     const data = await response.json()
     const text = getAssistantText(data)
     await emitFullTextWithTypewriter(text, onToken, signal)
-    return text
+    return {
+      text,
+      toolCalls: getToolCallsFromData(data).map((call, index) =>
+        normalizeToolCall(
+          {
+            id: call.id,
+            type: call.type,
+            function: {
+              name: call.name,
+              arguments: call.arguments,
+            },
+          },
+          index,
+        ),
+      ),
+    } satisfies StreamReply
   }
 
   const reader = response.body.getReader()
@@ -377,6 +722,7 @@ const readStreamResponse = async (
   let buffer = ''
   let fullText = ''
   let rawText = ''
+  const toolCalls: AgentToolCall[] = []
 
   while (true) {
     const { done, value } = await reader.read()
@@ -395,11 +741,13 @@ const readStreamResponse = async (
       const payload = trimmed.slice(5).trim()
       if (payload === '[DONE]') {
         await typewriter.drain()
-        return fullText
+        return { text: fullText, toolCalls } satisfies StreamReply
       }
 
       try {
         const data = JSON.parse(payload)
+        appendToolCallChunks(toolCalls, getToolCallsFromData(data))
+
         const reasoning = getStreamReasoningText(data)
         if (reasoning) {
           await onReasoning?.(reasoning)
@@ -427,11 +775,11 @@ const readStreamResponse = async (
     }
 
     await emitFullTextWithTypewriter(fallbackText, onToken, signal)
-    return fallbackText
+    return { text: fallbackText, toolCalls } satisfies StreamReply
   }
 
   await typewriter.drain()
-  return fullText
+  return { text: fullText, toolCalls } satisfies StreamReply
 }
 
 export const useChatStore = defineStore('chat', {
@@ -449,6 +797,38 @@ export const useChatStore = defineStore('chat', {
     activeSession: (state) => state.sessions.find((session) => session.id === state.activeSessionId) ?? state.sessions[0],
   },
   actions: {
+    async parseFileContent(file: File) {
+      if (!BIGMODEL_API_KEY) {
+        throw new Error('还没有配置 BigModel API Key。')
+      }
+
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('tool_type', 'prime-sync')
+      formData.append('file_type', getBigModelFileType(file.name))
+
+      const response = await fetch(BIGMODEL_FILE_PARSER_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${BIGMODEL_API_KEY}`,
+        },
+        body: formData,
+      })
+
+      if (!response.ok) {
+        throw new Error(await readErrorResponse(response))
+      }
+
+      const data = await response.json()
+      const content = getParsedFileText(data)
+
+      if (!content) {
+        console.warn('GLM file parser response without readable content', data)
+        throw new Error('文件解析完成，但没有返回可用文本。')
+      }
+
+      return content
+    },
     createSession() {
       const now = Date.now()
       const session: ChatSession = {
@@ -549,7 +929,9 @@ export const useChatStore = defineStore('chat', {
       }
 
       const reply = await this.requestAssistantReply(session.messages, {
+        agentMode: options.agentMode,
         deepThinking: options.deepThinking,
+        webSearch: options.webSearch,
         onReasoning: (token) => {
           hasProviderReasoning = true
           const message = ensureAssistantMessage()
@@ -707,31 +1089,51 @@ export const useChatStore = defineStore('chat', {
         return message
       }
 
+      const storedWebSearch = readStoredWebSearchEnabled()
+      const storedAgentMode = readStoredAgentModeEnabled()
+      const webSearchEnabled = Boolean(options.webSearch) || storedWebSearch
+      const agentModeEnabled = Boolean(options.agentMode) || storedAgentMode
       const systemPrompt = [
         options.systemPrompt ?? SYSTEM_PROMPT,
         options.deepThinking ? DEEP_THINKING_PROMPT : '',
-        options.webSearch ? WEB_SEARCH_PROMPT : '',
+        webSearchEnabled ? WEB_SEARCH_PROMPT : '',
+        agentModeEnabled ? AGENT_MODE_PROMPT : '',
       ]
         .filter(Boolean)
         .join('\n')
       const apiMessages = buildApiMessages(messages, systemPrompt)
       const maxTokens = estimateMaxTokens(apiMessages, options.deepThinking)
-      const tools = options.webSearch
-        ? [
-            {
-              type: 'web_search',
-              web_search: {
-                enable: true,
-                search_engine: 'search_std',
-                search_result: true,
-                search_prompt:
-                  '请用简洁的语言总结网络搜索结果 {search_result} 中和用户问题最相关的信息，优先使用最新、可信的来源。今天的日期是 ' +
-                  new Date().toLocaleDateString('zh-CN') +
-                  '。',
-              },
-            },
-          ]
-        : undefined
+      const tools = buildRequestTools(webSearchEnabled, agentModeEnabled)
+      const requestBody: Record<string, unknown> = {
+        model: BIGMODEL_MODEL,
+        messages: apiMessages,
+        thinking: {
+          type: options.deepThinking ? 'enabled' : 'disabled',
+          clear_thinking: true,
+        },
+        tools,
+        tool_choice: 'auto',
+        max_tokens: maxTokens,
+        stream: true,
+        temperature: 1,
+      }
+
+      if (agentModeEnabled) {
+        requestBody.tool_stream = true
+      }
+
+      if (import.meta.env.DEV) {
+        console.info('AI request options ' + JSON.stringify({
+          agentMode: agentModeEnabled,
+          deepThinking: Boolean(options.deepThinking),
+          optionAgentMode: Boolean(options.agentMode),
+          optionWebSearch: Boolean(options.webSearch),
+          storedAgentMode,
+          storedWebSearch,
+          webSearch: webSearchEnabled,
+          toolCount: tools.length,
+        }))
+      }
 
       try {
         const response = await fetch(BIGMODEL_API_URL, {
@@ -741,18 +1143,7 @@ export const useChatStore = defineStore('chat', {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${BIGMODEL_API_KEY}`,
           },
-          body: JSON.stringify({
-            model: BIGMODEL_MODEL,
-            messages: apiMessages,
-            thinking: {
-              type: options.deepThinking ? 'enabled' : 'disabled',
-              clear_thinking: true,
-            },
-            ...(tools ? { tools } : {}),
-            max_tokens: maxTokens,
-            stream: true,
-            temperature: 1,
-          }),
+          body: JSON.stringify(requestBody),
           signal: options.signal,
         })
 
@@ -761,7 +1152,47 @@ export const useChatStore = defineStore('chat', {
         }
 
         const reply = await readStreamResponse(response, options.onToken, options.onReasoning, options.signal)
-        if (reply) return reply
+        if (agentModeEnabled && reply.toolCalls.length) {
+          const toolMessages = reply.toolCalls.map((toolCall) => ({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: executeAgentTool(toolCall, messages),
+          })) satisfies ApiMessage[]
+          const followUpMessages = [
+            ...apiMessages,
+            {
+              role: 'assistant',
+              content: reply.text,
+              tool_calls: reply.toolCalls,
+            },
+            ...toolMessages,
+          ] satisfies ApiMessage[]
+          const followUpRequestBody: Record<string, unknown> = {
+            ...requestBody,
+            messages: followUpMessages,
+            tool_choice: 'none',
+            tool_stream: false,
+          }
+          const followUpResponse = await fetch(BIGMODEL_API_URL, {
+            method: 'POST',
+            headers: {
+              Accept: 'text/event-stream',
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${BIGMODEL_API_KEY}`,
+            },
+            body: JSON.stringify(followUpRequestBody),
+            signal: options.signal,
+          })
+
+          if (!followUpResponse.ok) {
+            throw new Error(await readErrorResponse(followUpResponse))
+          }
+
+          const finalReply = await readStreamResponse(followUpResponse, options.onToken, options.onReasoning, options.signal)
+          if (finalReply.text) return finalReply.text
+        }
+
+        if (reply.text) return reply.text
 
         console.warn('GLM response without readable content')
         return '接口返回为空。已在浏览器控制台打印原始返回，请看 Console 里的 “GLM response without readable content”。'
