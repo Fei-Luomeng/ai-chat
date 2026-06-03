@@ -42,7 +42,6 @@ const welcomeMessage: ChatMessage = {
 const createId = () => crypto.randomUUID()
 const BIGMODEL_API_KEY = 'b236db0425f94a2db8743cf915e12c3f.FE9eFM5sv1BMn5OU'
 const BIGMODEL_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
-const BIGMODEL_FILE_PARSER_URL = 'https://open.bigmodel.cn/api/paas/v4/files/parser/sync'
 const BIGMODEL_MODEL = 'glm-4.7-flash'
 const CONTEXT_MESSAGE_LIMIT = 20
 const CONTEXT_CHAR_LIMIT = 12000
@@ -227,38 +226,6 @@ const getAssistantText = (data: unknown) => {
     getTextFromContent(response.output_text) ||
     getTextFromContent(response.data?.output_text)
   )
-}
-
-const getParsedFileText = (data: unknown): string => {
-  if (typeof data === 'string') return data.trim()
-  if (!data || typeof data !== 'object') return ''
-  if (Array.isArray(data)) {
-    return data.map(getParsedFileText).filter(Boolean).join('\n\n').trim()
-  }
-
-  const response = data as Record<string, any>
-  const directText =
-    getTextFromContent(response.content) ||
-    getTextFromContent(response.text) ||
-    getTextFromContent(response.markdown) ||
-    getTextFromContent(response.result) ||
-    getTextFromContent(response.data?.content) ||
-    getTextFromContent(response.data?.text) ||
-    getTextFromContent(response.data?.markdown) ||
-    getTextFromContent(response.data?.result)
-
-  if (directText) return directText
-
-  return [
-    getParsedFileText(response.data?.pages),
-    getParsedFileText(response.data?.documents),
-    getParsedFileText(response.pages),
-    getParsedFileText(response.documents),
-    getParsedFileText(response.results),
-  ]
-    .filter(Boolean)
-    .join('\n\n')
-    .trim()
 }
 
 const getStreamText = (data: unknown) => {
@@ -496,56 +463,6 @@ const executeAgentTool = (toolCall: AgentToolCall, messages: ChatMessage[]) => {
       error: error instanceof Error ? error.message : String(error),
     })
   }
-}
-
-const getBigModelFileType = (fileName: string) => {
-  const extension = fileName.split('.').pop()?.toLowerCase() ?? ''
-  const fileTypeMap: Record<string, string> = {
-    bmp: 'BMP',
-    csv: 'CSV',
-    css: 'TXT',
-    doc: 'DOC',
-    docx: 'DOCX',
-    eps: 'EPS',
-    gif: 'GIF',
-    heic: 'HEIC',
-    heif: 'HEIF',
-    html: 'HTML',
-    icns: 'ICNS',
-    im: 'IM',
-    jpeg: 'JPEG',
-    jpg: 'JPG',
-    js: 'TXT',
-    json: 'TXT',
-    jp2: 'JP2',
-    jsx: 'TXT',
-    less: 'TXT',
-    log: 'TXT',
-    markdown: 'MD',
-    md: 'MD',
-    pcx: 'PCX',
-    pdf: 'PDF',
-    png: 'PNG',
-    ppm: 'PPM',
-    ppt: 'PPT',
-    pptx: 'PPTX',
-    scss: 'TXT',
-    tiff: 'TIFF',
-    ts: 'TXT',
-    tsx: 'TXT',
-    txt: 'TXT',
-    vue: 'TXT',
-    webp: 'WEBP',
-    wps: 'WPS',
-    xbm: 'XBM',
-    xls: 'XLS',
-    xlsx: 'XLSX',
-    xml: 'TXT',
-    yaml: 'TXT',
-    yml: 'TXT',
-  }
-
-  return fileTypeMap[extension] ?? 'TXT'
 }
 
 const readErrorResponse = async (response: Response) => {
@@ -797,38 +714,6 @@ export const useChatStore = defineStore('chat', {
     activeSession: (state) => state.sessions.find((session) => session.id === state.activeSessionId) ?? state.sessions[0],
   },
   actions: {
-    async parseFileContent(file: File) {
-      if (!BIGMODEL_API_KEY) {
-        throw new Error('还没有配置 BigModel API Key。')
-      }
-
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('tool_type', 'prime-sync')
-      formData.append('file_type', getBigModelFileType(file.name))
-
-      const response = await fetch(BIGMODEL_FILE_PARSER_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${BIGMODEL_API_KEY}`,
-        },
-        body: formData,
-      })
-
-      if (!response.ok) {
-        throw new Error(await readErrorResponse(response))
-      }
-
-      const data = await response.json()
-      const content = getParsedFileText(data)
-
-      if (!content) {
-        console.warn('GLM file parser response without readable content', data)
-        throw new Error('文件解析完成，但没有返回可用文本。')
-      }
-
-      return content
-    },
     createSession() {
       const now = Date.now()
       const session: ChatSession = {

@@ -730,6 +730,74 @@ button {
   font-weight: 600;
 }
 
+.message-actions {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.message-actions button {
+  padding: 2px 7px;
+  color: #666666;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.message-actions button:hover {
+  color: #2f63ff;
+  background: #f4f7ff;
+  border-color: #dbe5ff;
+}
+
+.message-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.message-editor textarea {
+  width: 100%;
+  min-height: 118px;
+  padding: 10px 12px;
+  resize: vertical;
+  color: #171717;
+  background: #ffffff;
+  border: 1px solid #d9d9d9;
+  border-radius: 12px;
+  outline: none;
+  line-height: 1.6;
+  font: inherit;
+}
+
+.message-editor textarea:focus {
+  border-color: #9db7ff;
+  box-shadow: 0 0 0 3px rgba(47, 99, 255, 0.12);
+}
+
+.message-editor-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.message-editor-actions button {
+  min-height: 32px;
+  padding: 0 12px;
+  color: #171717;
+  background: #ffffff;
+  border: 1px solid #d9d9d9;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.message-editor-actions button:first-child {
+  color: #ffffff;
+  background: #111111;
+  border-color: #111111;
+}
+
 .message-content p {
   margin: 0;
   line-height: 1.72;
@@ -1239,6 +1307,39 @@ button {
   width: min(100%, 720px);
 }
 
+.prompt-templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: min(100%, 820px);
+  margin: 0 auto 10px;
+}
+
+.project-home-inner > .prompt-templates,
+.welcome-card > .prompt-templates {
+  justify-content: center;
+}
+
+.prompt-templates button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 11px;
+  color: #333333;
+  background: #ffffff;
+  border: 1px solid #dedede;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.prompt-templates button:hover {
+  color: #2f63ff;
+  background: #f6f8ff;
+  border-color: #a9c0ff;
+}
+
 .typing {
   display: flex;
   gap: 6px;
@@ -1361,17 +1462,6 @@ button {
   color: #ffffff;
   background: #2f63ff;
   border-color: #2f63ff;
-}
-
-.composer-tools button:disabled {
-  cursor: not-allowed;
-  color: #9a9a9a;
-  background: #f3f3f3;
-  border-color: #dddddd;
-}
-
-.text-file-input {
-  display: none;
 }
 
 .composer-hint {
@@ -1842,6 +1932,36 @@ mark {
 
 .theme-dark .message-meta strong {
   color: #f5f5f5;
+}
+
+.theme-dark .message-actions button {
+  color: #b8b8b8;
+}
+
+.theme-dark .message-actions button:hover {
+  color: #9db7ff;
+  background: #252b3a;
+  border-color: #34436a;
+}
+
+.theme-dark .message-editor textarea,
+.theme-dark .message-editor-actions button,
+.theme-dark .prompt-templates button {
+  color: #f5f5f5;
+  background: #2f2f2f;
+  border-color: #454545;
+}
+
+.theme-dark .message-editor-actions button:first-child {
+  color: #ffffff;
+  background: #2f63ff;
+  border-color: #2f63ff;
+}
+
+.theme-dark .prompt-templates button:hover {
+  color: #9db7ff;
+  background: #252b3a;
+  border-color: #34436a;
 }
 
 .theme-dark .reasoning-panel,

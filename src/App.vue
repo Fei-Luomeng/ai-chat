@@ -41,8 +41,6 @@ interface PersistedAppState {
 
 const APP_STORAGE_KEY = 'ai-chat:app-state'
 const TOOL_STATE_KEY = 'ai-chat:tool-state'
-const TEXT_FILE_CHAR_LIMIT = 60000
-const FILE_PARSE_SIZE_LIMIT = 20 * 1024 * 1024
 const LEGACY_WELCOME_CONTENT = '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。'
 
 const normalizeMessages = (messages: ChatMessage[]) =>
@@ -87,8 +85,8 @@ const storedAppState = readAppState()
 const storedToolState = readToolState()
 const draft = ref('')
 const messagesRef = ref<HTMLElement | null>(null)
-const textFileInputRef = ref<HTMLInputElement | null>(null)
-const isParsingFile = ref(false)
+const editingMessageId = ref('')
+const editingDraft = ref('')
 const isSidebarCollapsed = ref(false)
 const isSearchOpen = ref(false)
 const searchText = ref('')
@@ -136,6 +134,34 @@ let projectAbortController: AbortController | null = null
 let liveTimer: number | undefined
 
 const createId = () => crypto.randomUUID()
+const promptTemplates = [
+  {
+    id: 'explain-code',
+    label: '解释代码',
+    prompt: '请解释下面这段代码的作用、执行流程、关键语法点，并指出可能的优化点：\n\n',
+  },
+  {
+    id: 'interview',
+    label: '面试八股',
+    prompt: '请用前端面试的方式回答这个问题：先给结论，再讲原理，然后给一个简短例子，最后补充常见追问。\n\n问题：',
+  },
+  {
+    id: 'resume',
+    label: '简历优化',
+    prompt: '请帮我优化下面这段简历描述：要求更像真实项目经历，突出业务价值、技术难点和量化结果，不要夸张。\n\n',
+  },
+  {
+    id: 'polish',
+    label: '翻译润色',
+    prompt: '请润色下面这段内容，让表达更自然、清晰、有礼貌。保留原意，不要过度扩写。\n\n',
+  },
+  {
+    id: 'weekly',
+    label: '生成周报',
+    prompt: '请根据下面的工作记录生成一份简洁周报，包含：本周完成、问题风险、下周计划。\n\n',
+  },
+]
+
 const summarizeTitle = (content: string) => {
   const normalized = content.trim().replace(/\s+/g, ' ')
   return normalized.length > 18 ? `${normalized.slice(0, 18)}...` : normalized || '新的对话'
@@ -531,99 +557,75 @@ const getSendOptions = () => ({
   webSearch: isWebSearch.value || isToolButtonPressed('web-search'),
 })
 
-const getTextFileLanguage = (fileName: string) => {
-  const extension = fileName.split('.').pop()?.toLowerCase() ?? ''
-  const languageMap: Record<string, string> = {
-    css: 'css',
-    csv: 'csv',
-    html: 'html',
-    js: 'javascript',
-    json: 'json',
-    jsx: 'javascript',
-    less: 'css',
-    log: 'text',
-    markdown: 'markdown',
-    md: 'markdown',
-    scss: 'css',
-    ts: 'typescript',
-    tsx: 'typescript',
-    txt: 'text',
-    vue: 'vue',
-    xml: 'xml',
-    yaml: 'yaml',
-    yml: 'yaml',
-  }
-
-  return languageMap[extension] ?? 'text'
-}
-
-const getMarkdownFence = (content: string) => {
-  let fence = '```'
-
-  while (content.includes(fence)) {
-    fence += '`'
-  }
-
-  return fence
-}
-
-const openTextFilePicker = () => {
-  if (isParsingFile.value) return
-  textFileInputRef.value?.click()
-}
-
-const appendRecognizedTextToDraft = (file: File, content: string) => {
-  const trimmedContent = content.trim()
-  const normalizedContent =
-    trimmedContent.length > TEXT_FILE_CHAR_LIMIT
-      ? `${trimmedContent.slice(0, TEXT_FILE_CHAR_LIMIT)}\n\n[内容过长，已截取前 ${TEXT_FILE_CHAR_LIMIT} 个字符]`
-      : trimmedContent
-  const language = getTextFileLanguage(file.name)
-  const fence = getMarkdownFence(normalizedContent)
-  const recognizedText = [
-    `请基于下面这个文件解析结果进行分析。`,
-    '',
-    `文件名：${file.name}`,
-    `文件大小：${Math.ceil(file.size / 1024)} KB`,
-    `解析方式：智谱文件解析`,
-    '',
-    `${fence}${language}`,
-    normalizedContent,
-    fence,
-  ].join('\n')
+const applyPromptTemplate = (template: { prompt: string }) => {
   const currentDraft = draft.value.trim()
-
-  draft.value = currentDraft ? `${currentDraft}\n\n${recognizedText}` : recognizedText
+  draft.value = currentDraft ? `${currentDraft}\n\n${template.prompt}` : template.prompt
 }
 
-const handleTextFileUpload = async (event: Event) => {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
+const startEditingMessage = (message: ChatMessage) => {
+  if (isResponding.value || message.role !== 'user') return
 
-  if (!file) return
+  editingMessageId.value = message.id
+  editingDraft.value = message.content
+}
 
-  if (file.size > FILE_PARSE_SIZE_LIMIT) {
-    ElMessage.warning('文件太大了，当前文件解析先支持 20MB 以内的文件。')
+const cancelEditingMessage = () => {
+  editingMessageId.value = ''
+  editingDraft.value = ''
+}
+
+const hasPreviousUserMessage = (message: ChatMessage) => {
+  const session = activeSession.value
+  if (!session || message.role !== 'assistant') return false
+
+  const messageIndex = session.messages.findIndex((item) => item.id === message.id)
+  return session.messages.slice(0, messageIndex).some((item) => item.role === 'user')
+}
+
+const resubmitUserMessage = async (messageId: string, nextContent?: string) => {
+  const session = activeSession.value
+  if (!session || isResponding.value) return
+
+  const messageIndex = session.messages.findIndex((message) => message.id === messageId && message.role === 'user')
+  if (messageIndex === -1) return
+
+  const content = (nextContent ?? session.messages[messageIndex].content).trim()
+  if (!content) return
+
+  const sendOptions = getSendOptions()
+  session.messages.splice(messageIndex)
+  session.updatedAt = Date.now()
+
+  if (isProjectMode.value) {
+    persistAppState()
+    await sendProjectContent(content, sendOptions)
     return
   }
 
-  isParsingFile.value = true
-  try {
-    const content = await chatStore.parseFileContent(file)
-    if (!content.trim()) {
-      ElMessage.warning('没有识别到可用文本内容。')
-      return
-    }
+  await chatStore.sendMessage(content, sendOptions)
+}
 
-    appendRecognizedTextToDraft(file, content)
-    ElMessage.success(`文件解析完成：${file.name}`)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '文件解析失败，请稍后重试。'
-    ElMessage.error(message)
-  } finally {
-    isParsingFile.value = false
-  }
+const submitEditedMessage = async (message: ChatMessage) => {
+  const content = editingDraft.value.trim()
+  if (!content) return
+
+  cancelEditingMessage()
+  await resubmitUserMessage(message.id, content)
+}
+
+const regenerateAssistantMessage = async (message: ChatMessage) => {
+  const session = activeSession.value
+  if (!session || isResponding.value || message.role !== 'assistant') return
+
+  const messageIndex = session.messages.findIndex((item) => item.id === message.id)
+  const userMessage = session.messages
+    .slice(0, messageIndex)
+    .reverse()
+    .find((item) => item.role === 'user')
+
+  if (!userMessage) return
+
+  await resubmitUserMessage(userMessage.id)
 }
 
 const showNavigatorTooltip = (
@@ -1306,13 +1308,6 @@ const formatTime = (timestamp: number) =>
       'theme-dark': themeMode === 'dark',
     }"
   >
-    <input
-      ref="textFileInputRef"
-      class="text-file-input"
-      type="file"
-      accept=".txt,.md,.markdown,.csv,.json,.js,.jsx,.ts,.tsx,.vue,.html,.css,.scss,.less,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.gif,text/*,application/json,application/pdf,image/*"
-      @change="handleTextFileUpload"
-    />
     <aside class="sidebar">
       <div class="sidebar-top">
         <button class="sidebar-icon-button" type="button" aria-label="搜索" @click="openSearch">
@@ -1448,6 +1443,18 @@ const formatTime = (timestamp: number) =>
               placeholder="添加项目说明，让这个项目里的对话有更清晰的背景。"
             />
 
+            <div class="prompt-templates" aria-label="提示词模板">
+              <button
+                v-for="template in promptTemplates"
+                :key="`project-${template.id}`"
+                type="button"
+                @click="applyPromptTemplate(template)"
+              >
+                <EditPen :size="14" />
+                <span>{{ template.label }}</span>
+              </button>
+            </div>
+
             <div class="project-hero-composer">
               <el-input
                 v-model="draft"
@@ -1477,15 +1484,6 @@ const formatTime = (timestamp: number) =>
                 >
                   <Setting :size="16" />
                   <span>Agent 模式</span>
-                </button>
-                <button
-                  type="button"
-                  data-tool="file-parser"
-                  :disabled="isParsingFile"
-                  @click="openTextFilePicker"
-                >
-                  <Plus :size="16" />
-                  <span>{{ isParsingFile ? '解析中' : '文件解析' }}</span>
                 </button>
                 <button
                   type="button"
@@ -1550,6 +1548,17 @@ const formatTime = (timestamp: number) =>
             </span>
             <p v-if="isProjectMode" class="project-kicker">项目：{{ activeProject }}</p>
             <h1>{{ isProjectMode ? '在这个项目中开始对话' : '有什么可以帮忙的？' }}</h1>
+            <div class="prompt-templates" aria-label="提示词模板">
+              <button
+                v-for="template in promptTemplates"
+                :key="`fresh-${template.id}`"
+                type="button"
+                @click="applyPromptTemplate(template)"
+              >
+                <EditPen :size="14" />
+                <span>{{ template.label }}</span>
+              </button>
+            </div>
             <div class="composer center-composer">
               <el-input
                 v-model="draft"
@@ -1579,15 +1588,6 @@ const formatTime = (timestamp: number) =>
                 >
                   <Setting :size="16" />
                   <span>Agent 模式</span>
-                </button>
-                <button
-                  type="button"
-                  data-tool="file-parser"
-                  :disabled="isParsingFile"
-                  @click="openTextFilePicker"
-                >
-                  <Plus :size="16" />
-                  <span>{{ isParsingFile ? '解析中' : '文件解析' }}</span>
                 </button>
                 <button
                   type="button"
@@ -1635,27 +1635,52 @@ const formatTime = (timestamp: number) =>
               <div class="message-meta">
                 <strong>{{ message.role === 'assistant' ? 'AI Chat' : '你' }}</strong>
                 <span>{{ formatTime(message.createdAt) }}</span>
-              </div>
-              <div v-if="message.role === 'assistant' && getReasoningContent(message)" class="reasoning-panel">
-                <button
-                  class="reasoning-toggle"
-                  type="button"
-                  :aria-expanded="isReasoningOpen(message.id)"
-                  @click="toggleReasoning(message.id)"
-                >
-                  <ChatDotRound :size="18" />
-                  <span>{{ getReasoningLabel(message) }}</span>
-                  <component class="reasoning-chevron" :is="isReasoningOpen(message.id) ? ArrowDown : ArrowRight" :size="15" />
-                </button>
-                <div v-show="isReasoningOpen(message.id)" class="reasoning-content">
-                  <div class="reasoning-markdown markdown-body" v-html="renderMarkdown(getReasoningContent(message))" />
+                <div v-if="!isResponding" class="message-actions">
+                  <button
+                    v-if="message.role === 'user'"
+                    type="button"
+                    @click="startEditingMessage(message)"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    v-else-if="hasPreviousUserMessage(message)"
+                    type="button"
+                    @click="regenerateAssistantMessage(message)"
+                  >
+                    重新生成
+                  </button>
                 </div>
               </div>
-              <div v-if="message.id === streamingAssistantMessageId && streamingAssistantMessageContent" class="streaming-markdown">
-                <div class="markdown-body" v-html="renderMarkdown(stripFinalAnswerMarker(streamingAssistantMessageContent))" />
-                <span class="stream-cursor" />
+              <div v-if="message.role === 'user' && editingMessageId === message.id" class="message-editor">
+                <textarea v-model="editingDraft" rows="4" />
+                <div class="message-editor-actions">
+                  <button type="button" @click="submitEditedMessage(message)">发送</button>
+                  <button type="button" @click="cancelEditingMessage">取消</button>
+                </div>
               </div>
-              <div v-else-if="message.content" class="markdown-body" v-html="renderMarkdown(getAnswerContent(message))" />
+              <template v-else>
+                <div v-if="message.role === 'assistant' && getReasoningContent(message)" class="reasoning-panel">
+                  <button
+                    class="reasoning-toggle"
+                    type="button"
+                    :aria-expanded="isReasoningOpen(message.id)"
+                    @click="toggleReasoning(message.id)"
+                  >
+                    <ChatDotRound :size="18" />
+                    <span>{{ getReasoningLabel(message) }}</span>
+                    <component class="reasoning-chevron" :is="isReasoningOpen(message.id) ? ArrowDown : ArrowRight" :size="15" />
+                  </button>
+                  <div v-show="isReasoningOpen(message.id)" class="reasoning-content">
+                    <div class="reasoning-markdown markdown-body" v-html="renderMarkdown(getReasoningContent(message))" />
+                  </div>
+                </div>
+                <div v-if="message.id === streamingAssistantMessageId && streamingAssistantMessageContent" class="streaming-markdown">
+                  <div class="markdown-body" v-html="renderMarkdown(stripFinalAnswerMarker(streamingAssistantMessageContent))" />
+                  <span class="stream-cursor" />
+                </div>
+                <div v-else-if="message.content" class="markdown-body" v-html="renderMarkdown(getAnswerContent(message))" />
+              </template>
             </div>
           </article>
 
@@ -1705,6 +1730,17 @@ const formatTime = (timestamp: number) =>
         </div>
 
         <div class="composer-panel">
+          <div class="prompt-templates" aria-label="提示词模板">
+            <button
+              v-for="template in promptTemplates"
+              :key="`panel-${template.id}`"
+              type="button"
+              @click="applyPromptTemplate(template)"
+            >
+              <EditPen :size="14" />
+              <span>{{ template.label }}</span>
+            </button>
+          </div>
           <div class="composer">
             <el-input
               v-model="draft"
@@ -1734,15 +1770,6 @@ const formatTime = (timestamp: number) =>
               >
                 <Setting :size="16" />
                 <span>Agent 模式</span>
-              </button>
-              <button
-                type="button"
-                data-tool="file-parser"
-                :disabled="isParsingFile"
-                @click="openTextFilePicker"
-              >
-                <Plus :size="16" />
-                <span>{{ isParsingFile ? '解析中' : '文件解析' }}</span>
               </button>
               <button
                 type="button"
