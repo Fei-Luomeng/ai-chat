@@ -29,10 +29,26 @@ import {
   type ChatSession,
 } from '@/stores/chat'
 
+interface PromptTemplate {
+  id: string
+  label: string
+  prompt: string
+}
+
+interface ModelSettings {
+  defaultAgentMode: boolean
+  defaultDeepThinking: boolean
+  defaultWebSearch: boolean
+  maxTokens: number
+  temperature: number
+}
+
 interface PersistedAppState {
   activeProject?: string
   avatarImage?: string
+  modelSettings?: ModelSettings
   profileName?: string
+  promptTemplates?: PromptTemplate[]
   projectDescriptions?: Record<string, string>
   projects?: string[]
   projectSessions?: Record<string, ChatSession[]>
@@ -40,8 +56,43 @@ interface PersistedAppState {
 }
 
 const APP_STORAGE_KEY = 'ai-chat:app-state'
+const CHAT_STORAGE_KEY = 'ai-chat:sessions'
 const TOOL_STATE_KEY = 'ai-chat:tool-state'
+const DEFAULT_MODEL_SETTINGS: ModelSettings = {
+  defaultAgentMode: false,
+  defaultDeepThinking: false,
+  defaultWebSearch: false,
+  maxTokens: 0,
+  temperature: 1,
+}
 const LEGACY_WELCOME_CONTENT = '你好，我是你的 AI 助手。可以帮你整理想法、写代码、润色文案，或者陪你拆解一个复杂问题。'
+const DEFAULT_PROMPT_TEMPLATES: PromptTemplate[] = [
+  {
+    id: 'explain-code',
+    label: '解释代码',
+    prompt: '请解释下面这段代码的作用、执行流程、关键语法点，并指出可能的优化点：\n\n',
+  },
+  {
+    id: 'interview',
+    label: '面试八股',
+    prompt: '请用前端面试的方式回答这个问题：先给结论，再讲原理，然后给一个简短例子，最后补充常见追问。\n\n问题：',
+  },
+  {
+    id: 'resume',
+    label: '简历优化',
+    prompt: '请帮我优化下面这段简历描述：要求更像真实项目经历，突出业务价值、技术难点和量化结果，不要夸张。\n\n',
+  },
+  {
+    id: 'polish',
+    label: '翻译润色',
+    prompt: '请润色下面这段内容，让表达更自然、清晰、有礼貌。保留原意，不要过度扩写。\n\n',
+  },
+  {
+    id: 'weekly',
+    label: '生成周报',
+    prompt: '请根据下面的工作记录生成一份简洁周报，包含：本周完成、问题风险、下周计划。\n\n',
+  },
+]
 
 const normalizeMessages = (messages: ChatMessage[]) =>
   messages.filter(
@@ -83,12 +134,19 @@ const readToolState = () => {
 const chatStore = useChatStore()
 const storedAppState = readAppState()
 const storedToolState = readToolState()
+const initialModelSettings = {
+  ...DEFAULT_MODEL_SETTINGS,
+  ...(storedAppState.modelSettings ?? {}),
+}
 const draft = ref('')
 const messagesRef = ref<HTMLElement | null>(null)
 const editingMessageId = ref('')
 const editingDraft = ref('')
 const isSidebarCollapsed = ref(false)
 const isSearchOpen = ref(false)
+const isExportOpen = ref(false)
+const isTemplateManagerOpen = ref(false)
+const isContextClearOpen = ref(false)
 const searchText = ref('')
 const isProjectsOpen = ref(true)
 const isRecentOpen = ref(true)
@@ -105,9 +163,16 @@ const projectStreamingMessageId = ref('')
 const projectStreamingReasoningContent = ref('')
 const projectStreamingReasoningEndedAt = ref(0)
 const projectStreamingReasoningStartedAt = ref(0)
-const isDeepThinking = ref(false)
-const isAgentMode = ref(Boolean(storedToolState.agentMode))
-const isWebSearch = ref(Boolean(storedToolState.webSearch))
+const modelSettings = ref<ModelSettings>(initialModelSettings)
+const draftModelSettings = ref<ModelSettings>({ ...initialModelSettings })
+const isDeepThinking = ref(initialModelSettings.defaultDeepThinking)
+const isAgentMode = ref(Boolean(storedToolState.agentMode ?? initialModelSettings.defaultAgentMode))
+const isWebSearch = ref(Boolean(storedToolState.webSearch ?? initialModelSettings.defaultWebSearch))
+const exportMode = ref<'all' | 'selected'>('all')
+const selectedExportMessageIds = ref<string[]>([])
+const editingTemplateId = ref('')
+const draftTemplateLabel = ref('')
+const draftTemplatePrompt = ref('')
 const liveNow = ref(Date.now())
 const activeMessageId = ref('')
 const collapsedReasoning = ref<Record<string, boolean>>({})
@@ -134,33 +199,7 @@ let projectAbortController: AbortController | null = null
 let liveTimer: number | undefined
 
 const createId = () => crypto.randomUUID()
-const promptTemplates = [
-  {
-    id: 'explain-code',
-    label: '解释代码',
-    prompt: '请解释下面这段代码的作用、执行流程、关键语法点，并指出可能的优化点：\n\n',
-  },
-  {
-    id: 'interview',
-    label: '面试八股',
-    prompt: '请用前端面试的方式回答这个问题：先给结论，再讲原理，然后给一个简短例子，最后补充常见追问。\n\n问题：',
-  },
-  {
-    id: 'resume',
-    label: '简历优化',
-    prompt: '请帮我优化下面这段简历描述：要求更像真实项目经历，突出业务价值、技术难点和量化结果，不要夸张。\n\n',
-  },
-  {
-    id: 'polish',
-    label: '翻译润色',
-    prompt: '请润色下面这段内容，让表达更自然、清晰、有礼貌。保留原意，不要过度扩写。\n\n',
-  },
-  {
-    id: 'weekly',
-    label: '生成周报',
-    prompt: '请根据下面的工作记录生成一份简洁周报，包含：本周完成、问题风险、下周计划。\n\n',
-  },
-]
+const promptTemplates = ref<PromptTemplate[]>(storedAppState.promptTemplates ?? DEFAULT_PROMPT_TEMPLATES)
 
 const summarizeTitle = (content: string) => {
   const normalized = content.trim().replace(/\s+/g, ' ')
@@ -233,10 +272,19 @@ const searchResults = computed(() => {
 
 const hasSearchQuery = computed(() => searchText.value.trim().length > 0)
 
+const sortSessions = (sessions: ChatSession[]) =>
+  [...sessions].sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
+
+    return right.updatedAt - left.updatedAt
+  })
+
+const sidebarSessions = computed(() => sortSessions(chatStore.sessions))
+
 const activeProjectSessions = computed(() => {
   if (!activeProject.value) return []
 
-  return projectSessions.value[activeProject.value] ?? []
+  return sortSessions(projectSessions.value[activeProject.value] ?? [])
 })
 
 const messageNavigatorItems = computed(() =>
@@ -250,13 +298,20 @@ const messageNavigatorItems = computed(() =>
     })),
 )
 
+const exportableMessages = computed(() => activeSession.value?.messages ?? [])
+const selectedExportMessages = computed(() =>
+  exportableMessages.value.filter((message) => selectedExportMessageIds.value.includes(message.id)),
+)
+
 const savedAvatarDisplay = computed(() => profileAvatar.value.trim().slice(0, 2).toUpperCase() || 'U')
 
 const persistAppState = () => {
   const state: PersistedAppState = {
     activeProject: activeProject.value,
     avatarImage: avatarImage.value,
+    modelSettings: modelSettings.value,
     profileName: profileName.value,
+    promptTemplates: promptTemplates.value,
     projectDescriptions: projectDescriptions.value,
     projects: projects.value,
     projectSessions: projectSessions.value,
@@ -265,6 +320,14 @@ const persistAppState = () => {
 
   try {
     window.localStorage?.setItem(APP_STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    // Storage can be unavailable in restricted browser contexts.
+  }
+}
+
+const persistChatSessions = () => {
+  try {
+    window.localStorage?.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatStore.sessions))
   } catch {
     // Storage can be unavailable in restricted browser contexts.
   }
@@ -455,6 +518,94 @@ const getAnswerContent = (message: ChatMessage) => {
   return stripFinalAnswerMarker(splitReasoningFromAnswer(message.content)?.answer ?? message.content)
 }
 
+const getMessagePlainText = (message: ChatMessage) => {
+  if (message.role === 'assistant') return getAnswerContent(message)
+
+  return message.content
+}
+
+const copyMessage = async (message: ChatMessage) => {
+  const content = getMessagePlainText(message).trim()
+  if (!content) return
+
+  await navigator.clipboard.writeText(content)
+  ElMessage.success('已复制消息')
+}
+
+const getSafeFileName = (value: string) =>
+  (value || 'AI Chat 对话')
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48) || 'AI Chat 对话'
+
+const openExportDialog = () => {
+  const session = activeSession.value
+  if (!session || session.messages.length === 0) {
+    ElMessage.warning('当前没有可导出的对话')
+    return
+  }
+
+  exportMode.value = 'all'
+  selectedExportMessageIds.value = session.messages.map((message) => message.id)
+  isExportOpen.value = true
+}
+
+const closeExportDialog = () => {
+  isExportOpen.value = false
+}
+
+const toggleExportMessage = (messageId: string) => {
+  selectedExportMessageIds.value = selectedExportMessageIds.value.includes(messageId)
+    ? selectedExportMessageIds.value.filter((id) => id !== messageId)
+    : [...selectedExportMessageIds.value, messageId]
+}
+
+const getExportMessagePreview = (message: ChatMessage) => {
+  const preview = getMessagePlainText(message).trim().replace(/\s+/g, ' ')
+
+  return preview.length > 72 ? `${preview.slice(0, 72)}...` : preview || '(空消息)'
+}
+
+const exportCurrentSession = () => {
+  const session = activeSession.value
+  if (!session) return
+
+  const messages = exportMode.value === 'all' ? session.messages : selectedExportMessages.value
+  if (messages.length === 0) {
+    ElMessage.warning('请至少选择一条消息')
+    return
+  }
+
+  const exportedAt = new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(Date.now())
+  const lines = [
+    `# ${session.title}`,
+    '',
+    `导出时间：${exportedAt}`,
+    '',
+    exportMode.value === 'selected' ? `导出范围：已选择 ${messages.length} 条消息` : '导出范围：全部对话',
+    '',
+    ...messages.flatMap((message) => [
+      `## ${message.role === 'assistant' ? 'AI Chat' : '你'} · ${formatTime(message.createdAt)}`,
+      '',
+      getMessagePlainText(message).trim() || '(空消息)',
+      '',
+    ]),
+  ]
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${getSafeFileName(session.title)}.md`
+  link.click()
+  URL.revokeObjectURL(url)
+  closeExportDialog()
+  ElMessage.success('已导出对话')
+}
+
 const getReasoningStartedAt = (message: ChatMessage) => {
   if (message.id === streamingAssistantMessageId.value) {
     return streamingReasoningStartedAt.value || message.reasoningStartedAt || message.createdAt || 0
@@ -554,12 +705,119 @@ const isToolButtonPressed = (tool: string) => {
 const getSendOptions = () => ({
   agentMode: isAgentMode.value || isToolButtonPressed('agent-mode'),
   deepThinking: isDeepThinking.value || isToolButtonPressed('deep-thinking'),
+  maxTokens: modelSettings.value.maxTokens || undefined,
+  temperature: modelSettings.value.temperature,
   webSearch: isWebSearch.value || isToolButtonPressed('web-search'),
 })
 
-const applyPromptTemplate = (template: { prompt: string }) => {
+const applyPromptTemplate = (template: PromptTemplate) => {
   const currentDraft = draft.value.trim()
   draft.value = currentDraft ? `${currentDraft}\n\n${template.prompt}` : template.prompt
+}
+
+const resetTemplateDraft = () => {
+  editingTemplateId.value = ''
+  draftTemplateLabel.value = ''
+  draftTemplatePrompt.value = ''
+}
+
+const openTemplateManager = () => {
+  resetTemplateDraft()
+  isTemplateManagerOpen.value = true
+}
+
+const closeTemplateManager = () => {
+  isTemplateManagerOpen.value = false
+  resetTemplateDraft()
+}
+
+const editPromptTemplate = (template: PromptTemplate) => {
+  editingTemplateId.value = template.id
+  draftTemplateLabel.value = template.label
+  draftTemplatePrompt.value = template.prompt
+}
+
+const savePromptTemplate = () => {
+  const label = draftTemplateLabel.value.trim()
+  const prompt = draftTemplatePrompt.value.trim()
+
+  if (!label || !prompt) {
+    ElMessage.warning('模板名称和内容都要填写')
+    return
+  }
+
+  if (editingTemplateId.value) {
+    promptTemplates.value = promptTemplates.value.map((template) =>
+      template.id === editingTemplateId.value ? { ...template, label, prompt } : template,
+    )
+    ElMessage.success('模板已更新')
+  } else {
+    promptTemplates.value = [{ id: `template-${createId()}`, label, prompt }, ...promptTemplates.value]
+    ElMessage.success('模板已新增')
+  }
+
+  resetTemplateDraft()
+}
+
+const deletePromptTemplate = (templateId: string) => {
+  promptTemplates.value = promptTemplates.value.filter((template) => template.id !== templateId)
+  if (editingTemplateId.value === templateId) resetTemplateDraft()
+  ElMessage.success('模板已删除')
+}
+
+const restoreDefaultTemplates = () => {
+  promptTemplates.value = DEFAULT_PROMPT_TEMPLATES.map((template) => ({ ...template }))
+  resetTemplateDraft()
+  ElMessage.success('已恢复默认模板')
+}
+
+const openContextClearDialog = () => {
+  const session = activeSession.value
+  if (isResponding.value) return
+
+  if (!session || session.messages.length === 0) {
+    ElMessage.warning('当前没有可清空的上下文')
+    return
+  }
+
+  isContextClearOpen.value = true
+}
+
+const closeContextClearDialog = () => {
+  isContextClearOpen.value = false
+}
+
+const clearCurrentContext = () => {
+  const session = activeSession.value
+  if (!session || isResponding.value) return
+
+  const now = Date.now()
+  session.contextClearedAt = now
+  session.updatedAt = now
+
+  if (isProjectMode.value) {
+    persistAppState()
+  } else {
+    persistChatSessions()
+  }
+
+  isContextClearOpen.value = false
+  ElMessage.success('已清空后续请求上下文，页面历史会保留')
+}
+
+const toggleChatSessionPinned = (session: ChatSession) => {
+  const willPin = !session.pinned
+  chatStore.toggleSessionPinned(session.id)
+  openActionMenu.value = ''
+  ElMessage.success(willPin ? '已置顶' : '已取消置顶')
+}
+
+const toggleProjectSessionPinned = (session: ChatSession) => {
+  const willPin = !session.pinned
+  session.pinned = willPin
+  openActionMenu.value = ''
+  persistAppState()
+  ElMessage.success(willPin ? '已置顶' : '已取消置顶')
 }
 
 const startEditingMessage = (message: ChatMessage) => {
@@ -659,7 +917,7 @@ watch(
 )
 
 watch(
-  [projects, projectSessions, projectDescriptions, activeProject, profileName, avatarImage, themeMode],
+  [projects, projectSessions, projectDescriptions, promptTemplates, modelSettings, activeProject, profileName, avatarImage, themeMode],
   () => {
     persistAppState()
   },
@@ -752,7 +1010,10 @@ const sendProjectContent = async (content: string, sendOptions = getSendOptions(
 
   const reply = await chatStore.requestAssistantReply(session.messages, {
     agentMode: sendOptions.agentMode,
+    contextClearedAt: session.contextClearedAt,
     deepThinking: sendOptions.deepThinking,
+    maxTokens: sendOptions.maxTokens,
+    temperature: sendOptions.temperature,
     webSearch: sendOptions.webSearch,
     onReasoning: (token) => {
       hasProviderReasoning = true
@@ -927,33 +1188,43 @@ const send = async () => {
   await chatStore.sendMessage(content, sendOptions)
 }
 
-const restoreInterruptedDraft = () => {
-  const session = activeSession.value
+const removeInterruptedAssistant = (session: ChatSession | undefined, streamingMessageId: string) => {
   if (!session) return
 
-  let lastMessage = session.messages.at(-1)
-  if (lastMessage?.role === 'assistant') {
-    session.messages.pop()
-    lastMessage = session.messages.at(-1)
+  const lastMessage = session.messages.at(-1)
+  const shouldRemoveAssistant =
+    lastMessage?.role === 'assistant' &&
+    (!lastMessage.content.trim() || Boolean(streamingMessageId && lastMessage.id === streamingMessageId))
+
+  if (shouldRemoveAssistant) {
+    session.messages.splice(-1, 1)
+    session.updatedAt = Date.now()
   }
-
-  if (lastMessage?.role !== 'user') return
-
-  draft.value = lastMessage.content
-  session.messages.pop()
-
-  if (session.messages.length <= 1) {
-    session.title = '新的对话'
-  }
-  session.updatedAt = Date.now()
-  persistAppState()
 }
 
 const stopResponding = () => {
-  restoreInterruptedDraft()
+  const session = activeSession.value
+  const chatStreamingMessageId = chatStore.streamingMessageId
+  const projectStreamingId = projectStreamingMessageId.value
+
   chatStore.stopResponding()
   projectAbortController?.abort()
   projectAbortController = null
+
+  if (isProjectMode.value) {
+    removeInterruptedAssistant(session, projectStreamingId)
+    isPendingProjectSession.value = false
+    isProjectHome.value = false
+    persistAppState()
+  } else {
+    removeInterruptedAssistant(session, chatStreamingMessageId)
+    isPendingNewSession.value = false
+    activeProject.value = ''
+    activeProjectSessionId.value = ''
+    isProjectHome.value = false
+    persistChatSessions()
+  }
+
   isProjectResponding.value = false
   projectStreamingMessageContent.value = ''
   projectStreamingMessageId.value = ''
@@ -1022,9 +1293,9 @@ const highlightParts = (content: string) => {
 const createSession = () => {
   chatStore.stopResponding()
   draft.value = ''
-  isDeepThinking.value = false
-  isAgentMode.value = false
-  isWebSearch.value = false
+  isDeepThinking.value = modelSettings.value.defaultDeepThinking
+  isAgentMode.value = modelSettings.value.defaultAgentMode
+  isWebSearch.value = modelSettings.value.defaultWebSearch
   persistToolState()
   currentMode.value = 'chat'
   activeProject.value = ''
@@ -1037,9 +1308,9 @@ const createSession = () => {
 
 const selectProject = (projectName: string) => {
   activeProject.value = projectName
-  isDeepThinking.value = false
-  isAgentMode.value = false
-  isWebSearch.value = false
+  isDeepThinking.value = modelSettings.value.defaultDeepThinking
+  isAgentMode.value = modelSettings.value.defaultAgentMode
+  isWebSearch.value = modelSettings.value.defaultWebSearch
   persistToolState()
   currentMode.value = 'project'
   isProjectHome.value = true
@@ -1247,16 +1518,35 @@ const handleAvatarUpload = (event: Event) => {
   avatarImage.value = URL.createObjectURL(file)
 }
 
+const openSettings = () => {
+  draftProfileName.value = profileName.value
+  draftThemeMode.value = themeMode.value
+  draftModelSettings.value = { ...modelSettings.value }
+  isSettingsOpen.value = true
+}
+
 const saveSettings = () => {
   profileName.value = draftProfileName.value.trim() || '用户'
   profileAvatar.value = draftProfileName.value.trim().slice(0, 2).toUpperCase()
   themeMode.value = draftThemeMode.value
+  modelSettings.value = {
+    defaultAgentMode: Boolean(draftModelSettings.value.defaultAgentMode),
+    defaultDeepThinking: Boolean(draftModelSettings.value.defaultDeepThinking),
+    defaultWebSearch: Boolean(draftModelSettings.value.defaultWebSearch),
+    maxTokens: Math.max(0, Math.min(8192, Math.round(Number(draftModelSettings.value.maxTokens) || 0))),
+    temperature: Math.max(0, Math.min(2, Number(draftModelSettings.value.temperature) || 0)),
+  }
+  isAgentMode.value = modelSettings.value.defaultAgentMode
+  isDeepThinking.value = modelSettings.value.defaultDeepThinking
+  isWebSearch.value = modelSettings.value.defaultWebSearch
+  persistToolState()
   isSettingsOpen.value = false
   ElMessage.success('设置已保存')
 }
 
 const closeSettings = () => {
   draftThemeMode.value = themeMode.value
+  draftModelSettings.value = { ...modelSettings.value }
   isSettingsOpen.value = false
 }
 
@@ -1377,20 +1667,28 @@ const formatTime = (timestamp: number) =>
           </button>
           <div class="session-list">
             <p v-if="chatStore.sessions.length === 0" class="sidebar-empty">暂无对话</p>
-            <div v-for="session in chatStore.sessions" :key="session.id" class="nav-row-wrap">
+            <div v-for="session in sidebarSessions" :key="session.id" class="nav-row-wrap">
               <button
                 class="session-item"
-                :class="{ active: session.id === chatStore.activeSessionId && !isProjectHome && !isPendingNewSession && !isPendingProjectSession }"
+                :class="{
+                  active: session.id === chatStore.activeSessionId && !isProjectHome && !isPendingNewSession && !isPendingProjectSession,
+                  pinned: session.pinned,
+                }"
                 type="button"
                 @click="chatStore.switchSession(session.id); currentMode = 'chat'; isProjectHome = false; activeProject = ''; activeProjectSessionId = ''; isPendingNewSession = false; isPendingProjectSession = false"
               >
                 <EditPen :size="16" />
                 <span>{{ session.title }}</span>
+                <small v-if="session.pinned" class="pin-mark">置顶</small>
               </button>
               <button class="row-action" type="button" aria-label="对话操作" @click.stop="toggleActionMenu(`session-${session.id}`, $event)">
                 <MoreFilled :size="15" />
               </button>
               <div v-if="openActionMenu === `session-${session.id}`" class="action-menu" :style="actionMenuStyle">
+                <button type="button" @click="toggleChatSessionPinned(session)">
+                  <ChatDotRound :size="16" />
+                  <span>{{ session.pinned ? '取消置顶' : '置顶对话' }}</span>
+                </button>
                 <button type="button" @click="renameSession(session)">
                   <EditPen :size="16" />
                   <span>重命名对话</span>
@@ -1406,7 +1704,7 @@ const formatTime = (timestamp: number) =>
       </div>
 
       <div class="sidebar-footer">
-        <button class="footer-action" type="button" @click="isSettingsOpen = true">
+        <button class="footer-action" type="button" @click="openSettings">
           <Setting :size="17" />
           <span>设置</span>
         </button>
@@ -1427,6 +1725,23 @@ const formatTime = (timestamp: number) =>
         <button class="model-button" type="button">
           <span>{{ isProjectMode ? '项目' : 'AI Chat' }}</span>
           <strong>{{ isProjectMode ? activeProject : headerSessionTitle }}</strong>
+        </button>
+        <button
+          class="header-context"
+          :class="{ active: activeSession?.contextClearedAt }"
+          type="button"
+          :disabled="isResponding"
+          @click="openContextClearDialog"
+        >
+          {{ activeSession?.contextClearedAt ? '已清上下文' : '清上下文' }}
+        </button>
+        <button
+          class="header-export"
+          type="button"
+          :disabled="!activeSession?.messages.length"
+          @click="openExportDialog"
+        >
+          导出
         </button>
       </header>
 
@@ -1452,6 +1767,10 @@ const formatTime = (timestamp: number) =>
               >
                 <EditPen :size="14" />
                 <span>{{ template.label }}</span>
+              </button>
+              <button class="manage-template-button" type="button" @click="openTemplateManager">
+                <Setting :size="14" />
+                <span>管理模板</span>
               </button>
             </div>
 
@@ -1513,10 +1832,13 @@ const formatTime = (timestamp: number) =>
                 v-for="session in activeProjectSessions"
                 :key="`home-${session.id}`"
                 class="project-chat-row"
-                @click="switchProjectSession(session.id)"
-              >
-                <div>
-                  <h3>{{ session.title }}</h3>
+              @click="switchProjectSession(session.id)"
+            >
+              <div>
+                  <h3>
+                    {{ session.title }}
+                    <small v-if="session.pinned" class="pin-mark project-pin">置顶</small>
+                  </h3>
                   <p>{{ getResultPreview(session) }}</p>
                 </div>
                 <time>{{ formatTime(session.updatedAt) }}</time>
@@ -1524,6 +1846,10 @@ const formatTime = (timestamp: number) =>
                   <MoreFilled :size="17" />
                 </button>
                 <div v-if="openActionMenu === `home-session-${session.id}`" class="action-menu home-menu" :style="actionMenuStyle">
+                  <button type="button" @click.stop="toggleProjectSessionPinned(session)">
+                    <ChatDotRound :size="16" />
+                    <span>{{ session.pinned ? '取消置顶' : '置顶对话' }}</span>
+                  </button>
                   <button type="button" @click.stop="renameSession(session)">
                     <EditPen :size="16" />
                     <span>重命名对话</span>
@@ -1557,6 +1883,10 @@ const formatTime = (timestamp: number) =>
               >
                 <EditPen :size="14" />
                 <span>{{ template.label }}</span>
+              </button>
+              <button class="manage-template-button" type="button" @click="openTemplateManager">
+                <Setting :size="14" />
+                <span>管理模板</span>
               </button>
             </div>
             <div class="composer center-composer">
@@ -1636,6 +1966,9 @@ const formatTime = (timestamp: number) =>
                 <strong>{{ message.role === 'assistant' ? 'AI Chat' : '你' }}</strong>
                 <span>{{ formatTime(message.createdAt) }}</span>
                 <div v-if="!isResponding" class="message-actions">
+                  <button type="button" @click="copyMessage(message)">
+                    复制
+                  </button>
                   <button
                     v-if="message.role === 'user'"
                     type="button"
@@ -1739,6 +2072,10 @@ const formatTime = (timestamp: number) =>
             >
               <EditPen :size="14" />
               <span>{{ template.label }}</span>
+            </button>
+            <button class="manage-template-button" type="button" @click="openTemplateManager">
+              <Setting :size="14" />
+              <span>管理模板</span>
             </button>
           </div>
           <div class="composer">
@@ -1845,6 +2182,147 @@ const formatTime = (timestamp: number) =>
       </div>
     </div>
 
+    <div v-if="isContextClearOpen" class="confirm-overlay" @click.self="closeContextClearDialog">
+      <section class="confirm-dialog" @click.stop>
+        <header>
+          <h2>清空上下文</h2>
+          <button type="button" aria-label="关闭弹窗" @click="closeContextClearDialog">
+            <Close :size="18" />
+          </button>
+        </header>
+        <div class="confirm-body">
+          <p>页面里的历史消息会保留，但下一次发送时，模型只会读取清空之后的新消息。</p>
+          <strong>{{ activeSession?.title ?? '当前对话' }}</strong>
+        </div>
+        <footer>
+          <button class="cancel-settings" type="button" @click="closeContextClearDialog">取消</button>
+          <button class="confirm-primary" type="button" @click="clearCurrentContext">确认清空</button>
+        </footer>
+      </section>
+    </div>
+
+    <div v-if="isTemplateManagerOpen" class="confirm-overlay" @click.self="closeTemplateManager">
+      <section class="template-dialog" @click.stop>
+        <header>
+          <div>
+            <p>提示词模板</p>
+            <h2>管理常用模板</h2>
+          </div>
+          <button type="button" aria-label="关闭模板管理" @click="closeTemplateManager">
+            <Close :size="18" />
+          </button>
+        </header>
+        <div class="template-body">
+          <div class="template-list">
+            <button
+              v-for="template in promptTemplates"
+              :key="`manage-${template.id}`"
+              type="button"
+              :class="{ active: editingTemplateId === template.id }"
+              @click="editPromptTemplate(template)"
+            >
+              <span>{{ template.label }}</span>
+              <small>{{ template.prompt }}</small>
+            </button>
+            <p v-if="promptTemplates.length === 0" class="template-empty">还没有模板。</p>
+          </div>
+
+          <div class="template-form">
+            <label>
+              <span>名称</span>
+              <input v-model="draftTemplateLabel" placeholder="例如：代码审查" />
+            </label>
+            <label>
+              <span>内容</span>
+              <textarea
+                v-model="draftTemplatePrompt"
+                placeholder="输入插入到对话框里的提示词内容"
+              />
+            </label>
+            <div class="template-form-actions">
+              <button type="button" @click="resetTemplateDraft">新建</button>
+              <button type="button" class="primary" @click="savePromptTemplate">
+                {{ editingTemplateId ? '保存修改' : '新增模板' }}
+              </button>
+            </div>
+          </div>
+        </div>
+        <footer>
+          <button class="cancel-settings" type="button" @click="restoreDefaultTemplates">恢复默认</button>
+          <button
+            v-if="editingTemplateId"
+            class="confirm-primary danger"
+            type="button"
+            @click="deletePromptTemplate(editingTemplateId)"
+          >
+            删除当前模板
+          </button>
+          <button class="confirm-primary" type="button" @click="closeTemplateManager">完成</button>
+        </footer>
+      </section>
+    </div>
+
+    <div v-if="isExportOpen" class="confirm-overlay" @click.self="closeExportDialog">
+      <section class="export-dialog" @click.stop>
+        <header>
+          <div>
+            <p>导出对话</p>
+            <h2>{{ activeSession?.title ?? 'AI Chat 对话' }}</h2>
+          </div>
+          <button type="button" aria-label="关闭导出" @click="closeExportDialog">
+            <Close :size="18" />
+          </button>
+        </header>
+        <div class="export-body">
+          <div class="export-mode">
+            <button
+              type="button"
+              :class="{ active: exportMode === 'all' }"
+              @click="exportMode = 'all'"
+            >
+              全部导出
+            </button>
+            <button
+              type="button"
+              :class="{ active: exportMode === 'selected' }"
+              @click="exportMode = 'selected'"
+            >
+              选择消息
+            </button>
+          </div>
+
+          <p class="export-summary">
+            {{
+              exportMode === 'all'
+                ? `将导出全部 ${exportableMessages.length} 条消息。`
+                : `将导出已选择的 ${selectedExportMessages.length} 条消息。`
+            }}
+          </p>
+
+          <div v-if="exportMode === 'selected'" class="export-message-list">
+            <button
+              v-for="message in exportableMessages"
+              :key="`export-${message.id}`"
+              type="button"
+              class="export-message-item"
+              :class="{ selected: selectedExportMessageIds.includes(message.id) }"
+              @click="toggleExportMessage(message.id)"
+            >
+              <span class="export-check" />
+              <span>
+                <strong>{{ message.role === 'assistant' ? 'AI Chat' : '你' }} · {{ formatTime(message.createdAt) }}</strong>
+                <small>{{ getExportMessagePreview(message) }}</small>
+              </span>
+            </button>
+          </div>
+        </div>
+        <footer>
+          <button class="cancel-settings" type="button" @click="closeExportDialog">取消</button>
+          <button class="confirm-primary" type="button" @click="exportCurrentSession">确认导出</button>
+        </footer>
+      </section>
+    </div>
+
     <div v-if="isSettingsOpen" class="settings-overlay" @click="closeSettings">
       <section class="settings-dialog" @click.stop>
         <header>
@@ -1881,6 +2359,44 @@ const formatTime = (timestamp: number) =>
               <span>黑色</span>
             </button>
           </div>
+          <section class="model-settings-panel">
+            <h3>AI 参数</h3>
+            <label>
+              <span>temperature</span>
+              <input
+                v-model.number="draftModelSettings.temperature"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+              />
+            </label>
+            <label>
+              <span>max_tokens</span>
+              <input
+                v-model.number="draftModelSettings.maxTokens"
+                type="number"
+                min="0"
+                max="8192"
+                step="256"
+                placeholder="0 表示自适应"
+              />
+            </label>
+            <div class="default-tools">
+              <label>
+                <input v-model="draftModelSettings.defaultDeepThinking" type="checkbox" />
+                <span>新对话默认深度思考</span>
+              </label>
+              <label>
+                <input v-model="draftModelSettings.defaultWebSearch" type="checkbox" />
+                <span>新对话默认联网搜索</span>
+              </label>
+              <label>
+                <input v-model="draftModelSettings.defaultAgentMode" type="checkbox" />
+                <span>新对话默认 Agent 模式</span>
+              </label>
+            </div>
+          </section>
         </div>
         <footer>
           <button class="cancel-settings" type="button" @click="closeSettings">取消</button>

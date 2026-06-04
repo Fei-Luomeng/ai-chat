@@ -13,15 +13,20 @@ export interface ChatMessage {
 }
 
 export interface ChatSession {
+  contextClearedAt?: number
   id: string
   title: string
   messages: ChatMessage[]
+  pinned?: boolean
   updatedAt: number
 }
 
 interface SendOptions {
-  deepThinking?: boolean
   agentMode?: boolean
+  contextClearedAt?: number
+  deepThinking?: boolean
+  maxTokens?: number
+  temperature?: number
   webSearch?: boolean
 }
 
@@ -477,9 +482,10 @@ const readErrorResponse = async (response: Response) => {
   }
 }
 
-const buildApiMessages = (messages: ChatMessage[], systemPrompt = SYSTEM_PROMPT): ApiMessage[] => {
+const buildApiMessages = (messages: ChatMessage[], systemPrompt = SYSTEM_PROMPT, contextClearedAt = 0): ApiMessage[] => {
   const conversation = messages
     .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .filter((message) => !contextClearedAt || message.createdAt >= contextClearedAt)
     .filter((message, index) => !(index === 0 && message.role === 'assistant' && message.content === welcomeMessage.content))
 
   const selected: ApiMessage[] = []
@@ -750,6 +756,21 @@ export const useChatStore = defineStore('chat', {
       }
       writeStoredSessions(this.sessions)
     },
+    toggleSessionPinned(sessionId: string) {
+      const session = this.sessions.find((item) => item.id === sessionId)
+      if (!session) return
+
+      session.pinned = !session.pinned
+      writeStoredSessions(this.sessions)
+    },
+    clearSessionContext(sessionId: string) {
+      const session = this.sessions.find((item) => item.id === sessionId)
+      if (!session) return
+
+      session.contextClearedAt = Date.now()
+      session.updatedAt = Date.now()
+      writeStoredSessions(this.sessions)
+    },
     clearActiveSession() {
       const session = this.activeSession
       if (!session) return
@@ -815,7 +836,10 @@ export const useChatStore = defineStore('chat', {
 
       const reply = await this.requestAssistantReply(session.messages, {
         agentMode: options.agentMode,
+        contextClearedAt: session.contextClearedAt,
         deepThinking: options.deepThinking,
+        maxTokens: options.maxTokens,
+        temperature: options.temperature,
         webSearch: options.webSearch,
         onReasoning: (token) => {
           hasProviderReasoning = true
@@ -986,8 +1010,13 @@ export const useChatStore = defineStore('chat', {
       ]
         .filter(Boolean)
         .join('\n')
-      const apiMessages = buildApiMessages(messages, systemPrompt)
-      const maxTokens = estimateMaxTokens(apiMessages, options.deepThinking)
+      const apiMessages = buildApiMessages(messages, systemPrompt, options.contextClearedAt)
+      const maxTokens = options.maxTokens
+        ? clamp(Math.round(options.maxTokens), 512, DEEP_THINKING_OUTPUT_TOKEN_LIMIT)
+        : estimateMaxTokens(apiMessages, options.deepThinking)
+      const temperature = options.temperature === undefined
+        ? 1
+        : clamp(Number(options.temperature), 0, 2)
       const tools = buildRequestTools(webSearchEnabled, agentModeEnabled)
       const requestBody: Record<string, unknown> = {
         model: BIGMODEL_MODEL,
@@ -1000,7 +1029,7 @@ export const useChatStore = defineStore('chat', {
         tool_choice: 'auto',
         max_tokens: maxTokens,
         stream: true,
-        temperature: 1,
+        temperature,
       }
 
       if (agentModeEnabled) {
@@ -1015,6 +1044,9 @@ export const useChatStore = defineStore('chat', {
           optionWebSearch: Boolean(options.webSearch),
           storedAgentMode,
           storedWebSearch,
+          maxTokens,
+          temperature,
+          contextClearedAt: options.contextClearedAt ?? 0,
           webSearch: webSearchEnabled,
           toolCount: tools.length,
         }))
