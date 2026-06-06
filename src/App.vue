@@ -43,6 +43,36 @@ interface ModelSettings {
   temperature: number
 }
 
+interface AppSendOptions {
+  agentMode: boolean
+  branchLabel?: string
+  branchOf?: string
+  deepThinking: boolean
+  maxTokens?: number
+  temperature: number
+  webSearch: boolean
+}
+
+interface SearchResult {
+  createdAt?: number
+  id: string
+  messageId?: string
+  preview: string
+  projectName?: string
+  role?: ChatMessage['role']
+  session: ChatSession
+  title: string
+  type: 'title' | 'message'
+}
+
+interface FavoriteResult {
+  id: string
+  message: ChatMessage
+  projectName?: string
+  session: ChatSession
+  title: string
+}
+
 interface PersistedAppState {
   activeProject?: string
   avatarImage?: string
@@ -139,15 +169,18 @@ const initialModelSettings = {
   ...(storedAppState.modelSettings ?? {}),
 }
 const draft = ref('')
+const importInputRef = ref<HTMLInputElement | null>(null)
 const messagesRef = ref<HTMLElement | null>(null)
 const editingMessageId = ref('')
 const editingDraft = ref('')
 const isSidebarCollapsed = ref(false)
 const isSearchOpen = ref(false)
+const isSessionSearchOpen = ref(false)
 const isExportOpen = ref(false)
 const isTemplateManagerOpen = ref(false)
 const isContextClearOpen = ref(false)
 const searchText = ref('')
+const sessionSearchText = ref('')
 const isProjectsOpen = ref(true)
 const isRecentOpen = ref(true)
 const isSettingsOpen = ref(false)
@@ -175,6 +208,7 @@ const draftTemplateLabel = ref('')
 const draftTemplatePrompt = ref('')
 const liveNow = ref(Date.now())
 const activeMessageId = ref('')
+const highlightedMessageId = ref('')
 const collapsedReasoning = ref<Record<string, boolean>>({})
 const hoveredNavigatorItem = ref<{ label: string; right: number; top: number } | null>(null)
 const openActionMenu = ref('')
@@ -197,13 +231,23 @@ const themeMode = ref<'light' | 'dark'>(storedAppState.themeMode ?? 'light')
 const draftThemeMode = ref<'light' | 'dark'>(themeMode.value)
 let projectAbortController: AbortController | null = null
 let liveTimer: number | undefined
+let searchHighlightTimer: number | undefined
 
 const createId = () => crypto.randomUUID()
 const promptTemplates = ref<PromptTemplate[]>(storedAppState.promptTemplates ?? DEFAULT_PROMPT_TEMPLATES)
 
 const summarizeTitle = (content: string) => {
-  const normalized = content.trim().replace(/\s+/g, ' ')
-  return normalized.length > 18 ? `${normalized.slice(0, 18)}...` : normalized || '新的对话'
+  const normalized = content
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:请|麻烦|帮我|请帮我|能不能|可以|可以帮我)?\s*(?:详细)?(?:解释|介绍|分析|说明|说说|聊聊|总结|写|生成|润色|翻译|优化)(?:一下|下|一下子)?\s*[：:，,。.]?\s*/i, '')
+    .replace(/^(?:关于|有关|对于)\s*/, '')
+    .replace(/^(?:什么是|什么叫|如何|怎么|怎样)\s*/, '')
+    .trim()
+  const fallback = content.trim().replace(/\s+/g, ' ')
+  const title = normalized || fallback
+
+  return title.length > 18 ? `${title.slice(0, 18)}...` : title || '新的对话'
 }
 
 const getNavigatorLabel = (content: string, index: number) => {
@@ -256,21 +300,85 @@ const headerSessionTitle = computed(() => {
 const projects = ref<string[]>(storedAppState.projects ?? [])
 projectSessions.value = normalizeProjectSessions(storedAppState.projectSessions ?? {})
 
-const searchResults = computed(() => {
+const getSearchPreview = (content: string) => {
+  const normalized = content.trim().replace(/\s+/g, ' ')
+
+  return normalized.length > 96 ? `${normalized.slice(0, 96)}...` : normalized
+}
+
+const searchResults = computed<SearchResult[]>(() => {
   const keyword = searchText.value.trim().toLowerCase()
   if (!keyword) return []
 
-  return chatStore.sessions.filter((session) => {
-    const searchable = [
-      session.title,
-      ...session.messages.map((message) => message.content),
-    ].join(' ').toLowerCase()
+  const allSessions = [
+    ...chatStore.sessions.map((session) => ({ session })),
+    ...Object.entries(projectSessions.value).flatMap(([projectName, sessions]) =>
+      sessions.map((session) => ({ projectName, session })),
+    ),
+  ]
 
-    return searchable.includes(keyword)
+  return allSessions.flatMap(({ projectName, session }) => {
+    const results: SearchResult[] = []
+    const title = projectName ? `${projectName} / ${session.title}` : session.title
+
+    if (session.title.toLowerCase().includes(keyword)) {
+      results.push({
+        id: `${projectName ?? 'chat'}-${session.id}-title`,
+        preview: getSearchPreview(getResultPreview(session)),
+        projectName,
+        session,
+        title,
+        type: 'title',
+      })
+    }
+
+    session.messages.forEach((message) => {
+      const content = getMessagePlainText(message)
+      if (!content.toLowerCase().includes(keyword)) return
+
+      results.push({
+        createdAt: message.createdAt,
+        id: `${projectName ?? 'chat'}-${session.id}-${message.id}`,
+        messageId: message.id,
+        preview: getSearchPreview(content),
+        projectName,
+        role: message.role,
+        session,
+        title,
+        type: 'message',
+      })
+    })
+
+    return results
   })
 })
 
 const hasSearchQuery = computed(() => searchText.value.trim().length > 0)
+const hasSessionSearchQuery = computed(() => sessionSearchText.value.trim().length > 0)
+const sessionSearchResults = computed<SearchResult[]>(() => {
+  const keyword = sessionSearchText.value.trim().toLowerCase()
+  const session = activeSession.value
+  if (!keyword || !session) return []
+
+  const title = isProjectMode.value && activeProject.value ? `${activeProject.value} / ${session.title}` : session.title
+
+  return session.messages.flatMap((message) => {
+    const content = getMessagePlainText(message)
+    if (!content.toLowerCase().includes(keyword)) return []
+
+    return {
+      id: `current-${session.id}-${message.id}`,
+      createdAt: message.createdAt,
+      messageId: message.id,
+      preview: getSearchPreview(content),
+      projectName: isProjectMode.value ? activeProject.value : undefined,
+      role: message.role,
+      session,
+      title,
+      type: 'message',
+    } satisfies SearchResult
+  })
+})
 
 const sortSessions = (sessions: ChatSession[]) =>
   [...sessions].sort((left, right) => {
@@ -286,6 +394,32 @@ const activeProjectSessions = computed(() => {
 
   return sortSessions(projectSessions.value[activeProject.value] ?? [])
 })
+
+const favoriteResults = computed<FavoriteResult[]>(() => [
+  ...chatStore.sessions.flatMap((session) =>
+    session.messages
+      .filter((message) => message.role === 'assistant' && message.favorited)
+      .map((message) => ({
+        id: `chat-${session.id}-${message.id}`,
+        message,
+        session,
+        title: session.title,
+      })),
+  ),
+  ...Object.entries(projectSessions.value).flatMap(([projectName, sessions]) =>
+    sessions.flatMap((session) =>
+      session.messages
+        .filter((message) => message.role === 'assistant' && message.favorited)
+        .map((message) => ({
+          id: `${projectName}-${session.id}-${message.id}`,
+          message,
+          projectName,
+          session,
+          title: `${projectName} / ${session.title}`,
+        })),
+    ),
+  ),
+])
 
 const messageNavigatorItems = computed(() =>
   (activeSession.value?.messages ?? [])
@@ -491,6 +625,14 @@ const jumpToMessage = async (messageId: string) => {
 
   row.scrollIntoView({ behavior: 'smooth', block: 'center' })
   activeMessageId.value = messageId
+  highlightedMessageId.value = messageId
+  if (searchHighlightTimer !== undefined) {
+    window.clearTimeout(searchHighlightTimer)
+  }
+  searchHighlightTimer = window.setTimeout(() => {
+    highlightedMessageId.value = ''
+    searchHighlightTimer = undefined
+  }, 1600)
 }
 
 const copyRenderedCode = async (event: MouseEvent) => {
@@ -524,12 +666,64 @@ const getMessagePlainText = (message: ChatMessage) => {
   return message.content
 }
 
+const getMessageBranchLabel = (message: ChatMessage, index: number, messages: ChatMessage[]) => {
+  if (message.branchLabel) return message.branchLabel
+
+  const previousMessage = messages[index - 1]
+  if (message.role === 'assistant' && previousMessage?.role === 'user') {
+    return previousMessage.branchLabel ?? ''
+  }
+
+  return ''
+}
+
+const getVisibleBranchLabel = (message: ChatMessage) => {
+  const messages = activeSession.value?.messages ?? []
+  const index = messages.findIndex((item) => item.id === message.id)
+
+  return index >= 0 ? getMessageBranchLabel(message, index, messages) : message.branchLabel ?? ''
+}
+
 const copyMessage = async (message: ChatMessage) => {
   const content = getMessagePlainText(message).trim()
   if (!content) return
 
   await navigator.clipboard.writeText(content)
   ElMessage.success('已复制消息')
+}
+
+const toggleMessageFavorite = (message: ChatMessage) => {
+  message.favorited = !message.favorited
+  const session = activeSession.value
+  if (session) session.updatedAt = Date.now()
+
+  if (isProjectMode.value) {
+    persistAppState()
+  } else {
+    persistChatSessions()
+  }
+
+  ElMessage.success(message.favorited ? '已收藏回答' : '已取消收藏')
+}
+
+const switchFromFavorite = async (favorite: FavoriteResult) => {
+  chatStore.stopResponding()
+
+  if (favorite.projectName) {
+    activeProject.value = favorite.projectName
+    activeProjectSessionId.value = favorite.session.id
+    currentMode.value = 'project'
+  } else {
+    chatStore.switchSession(favorite.session.id)
+    currentMode.value = 'chat'
+    activeProject.value = ''
+    activeProjectSessionId.value = ''
+  }
+
+  isProjectHome.value = false
+  isPendingNewSession.value = false
+  isPendingProjectSession.value = false
+  await jumpToMessage(favorite.message.id)
 }
 
 const getSafeFileName = (value: string) =>
@@ -588,12 +782,16 @@ const exportCurrentSession = () => {
     '',
     exportMode.value === 'selected' ? `导出范围：已选择 ${messages.length} 条消息` : '导出范围：全部对话',
     '',
-    ...messages.flatMap((message) => [
-      `## ${message.role === 'assistant' ? 'AI Chat' : '你'} · ${formatTime(message.createdAt)}`,
-      '',
-      getMessagePlainText(message).trim() || '(空消息)',
-      '',
-    ]),
+    ...messages.flatMap((message, index) => {
+      const branchLabel = getMessageBranchLabel(message, index, messages)
+
+      return [
+        `## ${message.role === 'assistant' ? 'AI Chat' : '你'}${branchLabel ? ` · ${branchLabel}` : ''} · ${formatTime(message.createdAt)}`,
+        '',
+        getMessagePlainText(message).trim() || '(空消息)',
+        '',
+      ]
+    }),
   ]
   const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -604,6 +802,91 @@ const exportCurrentSession = () => {
   URL.revokeObjectURL(url)
   closeExportDialog()
   ElMessage.success('已导出对话')
+}
+
+const parseImportedMarkdown = (content: string) => {
+  const lines = content.replace(/\r\n/g, '\n').split('\n')
+  const title = lines.find((line) => line.startsWith('# '))?.replace(/^#\s+/, '').trim() || '导入的对话'
+  const messages: ChatMessage[] = []
+  let currentRole: ChatMessage['role'] | null = null
+  let currentBranchLabel = ''
+  let currentContent: string[] = []
+
+  const flushMessage = () => {
+    if (!currentRole) return
+    const messageContent = currentContent.join('\n').trim()
+    if (!messageContent) return
+
+    messages.push({
+      branchLabel: currentRole === 'user' ? currentBranchLabel || undefined : undefined,
+      id: createId(),
+      role: currentRole,
+      content: messageContent,
+      createdAt: Date.now() + messages.length,
+    })
+  }
+
+  lines.forEach((line) => {
+    const headingMatch = line.match(/^##\s+(你|AI Chat)(?:\s+·\s*(分支\s+\d+))?(?:\s+·.*)?$/)
+    if (headingMatch) {
+      flushMessage()
+      currentRole = headingMatch[1] === '你' ? 'user' : 'assistant'
+      currentBranchLabel = currentRole === 'user' ? headingMatch[2] ?? '' : ''
+      currentContent = []
+      return
+    }
+
+    if (currentRole) {
+      currentContent.push(line)
+    }
+  })
+  flushMessage()
+
+  return {
+    messages,
+    title,
+  }
+}
+
+const importMarkdownSession = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  if (!file.name.toLowerCase().endsWith('.md')) {
+    ElMessage.warning('请选择 Markdown 文件')
+    return
+  }
+
+  const content = await file.text()
+  const parsed = parseImportedMarkdown(content)
+  if (parsed.messages.length === 0) {
+    ElMessage.warning('没有识别到可导入的消息')
+    return
+  }
+
+  const now = Date.now()
+  const session: ChatSession = {
+    id: createId(),
+    title: parsed.title,
+    messages: parsed.messages,
+    updatedAt: now,
+  }
+
+  chatStore.stopResponding()
+  chatStore.sessions.unshift(session)
+  chatStore.switchSession(session.id)
+  currentMode.value = 'chat'
+  activeProject.value = ''
+  activeProjectSessionId.value = ''
+  isProjectHome.value = false
+  isPendingNewSession.value = false
+  isPendingProjectSession.value = false
+  persistChatSessions()
+  await nextTick()
+  await scrollToBottom()
+  ElMessage.success('已导入 Markdown 对话')
 }
 
 const getReasoningStartedAt = (message: ChatMessage) => {
@@ -702,7 +985,7 @@ const isToolButtonPressed = (tool: string) => {
   return Boolean(document.querySelector(`.composer-tools button[data-tool="${tool}"][aria-pressed="true"]`))
 }
 
-const getSendOptions = () => ({
+const getSendOptions = (): AppSendOptions => ({
   agentMode: isAgentMode.value || isToolButtonPressed('agent-mode'),
   deepThinking: isDeepThinking.value || isToolButtonPressed('deep-thinking'),
   maxTokens: modelSettings.value.maxTokens || undefined,
@@ -863,12 +1146,38 @@ const resubmitUserMessage = async (messageId: string, nextContent?: string) => {
   await chatStore.sendMessage(content, sendOptions)
 }
 
+const getNextBranchLabel = (sourceMessageId: string) => {
+  const session = activeSession.value
+  const branchCount = session?.messages.filter((message) => message.branchOf === sourceMessageId).length ?? 0
+
+  return `分支 ${branchCount + 1}`
+}
+
+const submitBranchMessage = async (message: ChatMessage, content: string) => {
+  const session = activeSession.value
+  if (!session || isResponding.value) return
+
+  const branchLabel = getNextBranchLabel(message.id)
+  const sendOptions = {
+    ...getSendOptions(),
+    branchLabel,
+    branchOf: message.id,
+  }
+
+  if (isProjectMode.value) {
+    await sendProjectContent(content, sendOptions)
+    return
+  }
+
+  await chatStore.sendMessage(content, sendOptions)
+}
+
 const submitEditedMessage = async (message: ChatMessage) => {
   const content = editingDraft.value.trim()
   if (!content) return
 
   cancelEditingMessage()
-  await resubmitUserMessage(message.id, content)
+  await submitBranchMessage(message, content)
 }
 
 const regenerateAssistantMessage = async (message: ChatMessage) => {
@@ -963,18 +1272,24 @@ const createProjectSession = (projectName: string) => {
   return session
 }
 
-const sendProjectContent = async (content: string, sendOptions = getSendOptions()) => {
+const sendProjectContent = async (content: string, sendOptions: AppSendOptions = getSendOptions()) => {
   const session = activeProjectSession.value
   const trimmedContent = content.trim()
   if (!session || !trimmedContent || isProjectResponding.value) return
 
   const now = Date.now()
-  session.messages.push({
+  const branchSourceIndex = sendOptions.branchOf
+    ? session.messages.findIndex((message) => message.id === sendOptions.branchOf)
+    : -1
+  const userMessage: ChatMessage = {
+    branchLabel: sendOptions.branchLabel,
+    branchOf: sendOptions.branchOf,
     id: createId(),
     role: 'user',
     content: trimmedContent,
     createdAt: now,
-  })
+  }
+  session.messages.push(userMessage)
 
   if (session.messages.length === 1) {
     session.title = summarizeTitle(trimmedContent)
@@ -992,6 +1307,8 @@ const sendProjectContent = async (content: string, sendOptions = getSendOptions(
   const ensureProjectAssistantMessage = () => {
     if (!assistantMessage) {
       assistantMessage = {
+        branchLabel: sendOptions.branchLabel,
+        branchOf: sendOptions.branchOf,
         id: createId(),
         role: 'assistant',
         content: '',
@@ -1008,7 +1325,10 @@ const sendProjectContent = async (content: string, sendOptions = getSendOptions(
     return assistantMessage
   }
 
-  const reply = await chatStore.requestAssistantReply(session.messages, {
+  const contextMessages =
+    branchSourceIndex >= 0 ? [...session.messages.slice(0, branchSourceIndex), userMessage] : session.messages
+
+  const reply = await chatStore.requestAssistantReply(contextMessages, {
     agentMode: sendOptions.agentMode,
     contextClearedAt: session.contextClearedAt,
     deepThinking: sendOptions.deepThinking,
@@ -1245,17 +1565,53 @@ const closeSearch = () => {
   searchText.value = ''
 }
 
-const switchFromSearch = (session: ChatSession) => {
+const openSessionSearch = async () => {
+  if (!activeSession.value?.messages.length) {
+    ElMessage.warning('当前会话还没有可搜索的消息')
+    return
+  }
+
+  isSessionSearchOpen.value = true
+  await nextTick()
+  document.querySelector<HTMLInputElement>('.session-search-dialog input')?.focus()
+}
+
+const closeSessionSearch = () => {
+  isSessionSearchOpen.value = false
+  sessionSearchText.value = ''
+}
+
+const switchFromSearch = async (result: SearchResult) => {
   chatStore.stopResponding()
-  chatStore.switchSession(session.id)
-  currentMode.value = 'chat'
-  activeProject.value = ''
-  activeProjectSessionId.value = ''
+
+  if (result.projectName) {
+    activeProject.value = result.projectName
+    activeProjectSessionId.value = result.session.id
+    currentMode.value = 'project'
+  } else {
+    chatStore.switchSession(result.session.id)
+    currentMode.value = 'chat'
+    activeProject.value = ''
+    activeProjectSessionId.value = ''
+  }
+
   isProjectHome.value = false
   isPendingNewSession.value = false
   isPendingProjectSession.value = false
   closeSearch()
-  void scrollToBottom()
+
+  if (result.messageId) {
+    await jumpToMessage(result.messageId)
+  } else {
+    await scrollToBottom()
+  }
+}
+
+const switchFromSessionSearch = async (result: SearchResult) => {
+  closeSessionSearch()
+  if (result.messageId) {
+    await jumpToMessage(result.messageId)
+  }
 }
 
 const getResultPreview = (session: ChatSession) => {
@@ -1263,8 +1619,8 @@ const getResultPreview = (session: ChatSession) => {
   return message?.content ?? '暂无消息'
 }
 
-const highlightParts = (content: string) => {
-  const keyword = searchText.value.trim()
+const highlightParts = (content: string, explicitKeyword = searchText.value.trim()) => {
+  const keyword = explicitKeyword.trim()
   if (!keyword) return [{ text: content, hit: false }]
 
   const lowerContent = content.toLowerCase()
@@ -1550,6 +1906,106 @@ const closeSettings = () => {
   isSettingsOpen.value = false
 }
 
+const isTextInputTarget = (target: EventTarget | null) => {
+  const element = target as HTMLElement | null
+  if (!element) return false
+
+  return Boolean(element.closest('input, textarea, [contenteditable="true"], .el-input, .el-textarea'))
+}
+
+const hasOpenDialog = () =>
+  isSearchOpen.value ||
+  isSessionSearchOpen.value ||
+  isContextClearOpen.value ||
+  isTemplateManagerOpen.value ||
+  isExportOpen.value ||
+  isSettingsOpen.value ||
+  Boolean(actionDialog.value)
+
+const focusDraftInput = async () => {
+  if (hasOpenDialog()) return
+
+  await nextTick()
+  const input = document.querySelector<HTMLTextAreaElement>(
+    '.project-hero-composer textarea, .center-composer textarea, .composer-panel textarea',
+  )
+  input?.focus()
+}
+
+const closeTopDialog = () => {
+  if (isSearchOpen.value) {
+    closeSearch()
+    return true
+  }
+  if (isSessionSearchOpen.value) {
+    closeSessionSearch()
+    return true
+  }
+  if (isContextClearOpen.value) {
+    closeContextClearDialog()
+    return true
+  }
+  if (isTemplateManagerOpen.value) {
+    closeTemplateManager()
+    return true
+  }
+  if (isExportOpen.value) {
+    closeExportDialog()
+    return true
+  }
+  if (isSettingsOpen.value) {
+    closeSettings()
+    return true
+  }
+  if (actionDialog.value) {
+    closeActionDialog()
+    return true
+  }
+  if (openActionMenu.value) {
+    openActionMenu.value = ''
+    return true
+  }
+
+  return false
+}
+
+const sendFromShortcut = () => {
+  if (isResponding.value || !hasDraft.value || hasOpenDialog()) return
+
+  if (isProjectMode.value && isProjectHome.value) {
+    void sendProjectMessage()
+    return
+  }
+
+  void send()
+}
+
+const handleGlobalKeyDown = (event: KeyboardEvent) => {
+  const isModKey = event.metaKey || event.ctrlKey
+
+  if (isModKey && event.key.toLowerCase() === 'k') {
+    event.preventDefault()
+    void openSearch()
+    return
+  }
+
+  if (event.key === 'Escape') {
+    if (closeTopDialog()) event.preventDefault()
+    return
+  }
+
+  if (isModKey && event.key === 'Enter') {
+    event.preventDefault()
+    sendFromShortcut()
+    return
+  }
+
+  if (event.key === '/' && !isTextInputTarget(event.target)) {
+    event.preventDefault()
+    void focusDraftInput()
+  }
+}
+
 const handleGlobalPointerDown = (event: PointerEvent) => {
   const target = event.target as HTMLElement | null
   if (!target) return
@@ -1574,12 +2030,17 @@ const handleGlobalPointerDown = (event: PointerEvent) => {
 
 onMounted(() => {
   document.addEventListener('pointerdown', handleGlobalPointerDown, true)
+  document.addEventListener('keydown', handleGlobalKeyDown)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', handleGlobalPointerDown, true)
+  document.removeEventListener('keydown', handleGlobalKeyDown)
   if (liveTimer !== undefined) {
     window.clearInterval(liveTimer)
+  }
+  if (searchHighlightTimer !== undefined) {
+    window.clearTimeout(searchHighlightTimer)
   }
 })
 
@@ -1701,6 +2162,23 @@ const formatTime = (timestamp: number) =>
             </div>
           </div>
         </section>
+
+        <section class="sidebar-section favorite-section">
+          <h2>收藏回答</h2>
+          <div class="favorite-list">
+            <p v-if="favoriteResults.length === 0" class="sidebar-empty">暂无收藏</p>
+            <button
+              v-for="favorite in favoriteResults"
+              :key="favorite.id"
+              class="favorite-item"
+              type="button"
+              @click="switchFromFavorite(favorite)"
+            >
+              <strong>{{ favorite.title }}</strong>
+              <span>{{ getExportMessagePreview(favorite.message) }}</span>
+            </button>
+          </div>
+        </section>
       </div>
 
       <div class="sidebar-footer">
@@ -1727,6 +2205,14 @@ const formatTime = (timestamp: number) =>
           <strong>{{ isProjectMode ? activeProject : headerSessionTitle }}</strong>
         </button>
         <button
+          class="header-session-search"
+          type="button"
+          :disabled="!activeSession?.messages.length"
+          @click="openSessionSearch"
+        >
+          查当前
+        </button>
+        <button
           class="header-context"
           :class="{ active: activeSession?.contextClearedAt }"
           type="button"
@@ -1735,6 +2221,20 @@ const formatTime = (timestamp: number) =>
         >
           {{ activeSession?.contextClearedAt ? '已清上下文' : '清上下文' }}
         </button>
+        <button
+          class="header-export"
+          type="button"
+          @click="importInputRef?.click()"
+        >
+          导入
+        </button>
+        <input
+          ref="importInputRef"
+          class="hidden-file-input"
+          type="file"
+          accept=".md,text/markdown,text/plain"
+          @change="importMarkdownSession"
+        />
         <button
           class="header-export"
           type="button"
@@ -1958,16 +2458,24 @@ const formatTime = (timestamp: number) =>
             :data-message-id="message.id"
             :data-message-role="message.role"
             class="message-row"
-            :class="message.role"
+            :class="[message.role, { 'search-highlight': message.id === highlightedMessageId }]"
           >
             <div class="avatar">{{ message.role === 'assistant' ? 'AI' : '你' }}</div>
             <div class="message-content">
               <div class="message-meta">
                 <strong>{{ message.role === 'assistant' ? 'AI Chat' : '你' }}</strong>
+                <em v-if="getVisibleBranchLabel(message)">{{ getVisibleBranchLabel(message) }}</em>
                 <span>{{ formatTime(message.createdAt) }}</span>
                 <div v-if="!isResponding" class="message-actions">
                   <button type="button" @click="copyMessage(message)">
                     复制
+                  </button>
+                  <button
+                    v-if="message.role === 'assistant'"
+                    type="button"
+                    @click="toggleMessageFavorite(message)"
+                  >
+                    {{ message.favorited ? '取消收藏' : '收藏' }}
                   </button>
                   <button
                     v-if="message.role === 'user'"
@@ -2155,22 +2663,23 @@ const formatTime = (timestamp: number) =>
         <div class="search-results" :class="{ idle: !hasSearchQuery }">
           <p v-if="!hasSearchQuery" class="search-idle">输入关键词后开始搜索对话</p>
           <button
-            v-for="session in searchResults"
-            :key="session.id"
+            v-for="result in searchResults"
+            :key="result.id"
             class="search-result"
             type="button"
-            @click="switchFromSearch(session)"
+            @click="switchFromSearch(result)"
           >
             <span class="spark" />
             <span class="result-copy">
               <strong>
-                <template v-for="(part, index) in highlightParts(session.title)" :key="`${session.id}-title-${index}`">
+                <template v-for="(part, index) in highlightParts(result.title)" :key="`${result.id}-title-${index}`">
                   <mark v-if="part.hit">{{ part.text }}</mark>
                   <span v-else>{{ part.text }}</span>
                 </template>
               </strong>
+              <em>{{ result.type === 'title' ? '标题命中' : result.role === 'assistant' ? 'AI Chat' : '你' }}</em>
               <small>
-                <template v-for="(part, index) in highlightParts(getResultPreview(session))" :key="`${session.id}-preview-${index}`">
+                <template v-for="(part, index) in highlightParts(result.preview)" :key="`${result.id}-preview-${index}`">
                   <mark v-if="part.hit">{{ part.text }}</mark>
                   <span v-else>{{ part.text }}</span>
                 </template>
@@ -2178,6 +2687,44 @@ const formatTime = (timestamp: number) =>
             </span>
           </button>
           <p v-if="hasSearchQuery && searchResults.length === 0" class="empty-search">没有找到相关对话</p>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="isSessionSearchOpen" class="search-overlay" @click.self="closeSessionSearch">
+      <div class="search-dialog session-search-dialog">
+        <div class="search-box">
+          <Search :size="20" />
+          <input v-model="sessionSearchText" placeholder="搜索当前会话..." />
+          <button v-if="sessionSearchText" type="button" aria-label="清除搜索" @click="sessionSearchText = ''">
+            <Close :size="18" />
+          </button>
+          <button v-else type="button" aria-label="关闭当前会话搜索" @click="closeSessionSearch">
+            <Close :size="18" />
+          </button>
+        </div>
+        <div class="search-results" :class="{ idle: !hasSessionSearchQuery }">
+          <p v-if="!hasSessionSearchQuery" class="search-idle">输入关键词后搜索当前会话</p>
+          <button
+            v-for="result in sessionSearchResults"
+            :key="result.id"
+            class="search-result"
+            type="button"
+            @click="switchFromSessionSearch(result)"
+          >
+            <span class="spark" />
+            <span class="result-copy">
+              <strong>{{ result.role === 'assistant' ? 'AI Chat' : '你' }} · {{ formatTime(result.createdAt ?? Date.now()) }}</strong>
+              <em>当前会话</em>
+              <small>
+                <template v-for="(part, index) in highlightParts(result.preview, sessionSearchText)" :key="`${result.id}-current-preview-${index}`">
+                  <mark v-if="part.hit">{{ part.text }}</mark>
+                  <span v-else>{{ part.text }}</span>
+                </template>
+              </small>
+            </span>
+          </button>
+          <p v-if="hasSessionSearchQuery && sessionSearchResults.length === 0" class="empty-search">当前会话里没有找到相关消息</p>
         </div>
       </div>
     </div>
@@ -2409,7 +2956,15 @@ const formatTime = (timestamp: number) =>
       <section class="confirm-dialog" @click.stop>
         <header>
           <h2>
-            {{ actionDialog.type === 'create-project' ? '新项目' : actionDialog.type.startsWith('rename') ? '重命名' : '确认删除' }}
+            {{
+              actionDialog.type === 'create-project'
+                ? '新项目'
+                : actionDialog.type.startsWith('rename')
+                  ? '重命名'
+                  : actionDialog.type === 'delete-session'
+                    ? '确认删除对话'
+                    : '确认删除项目'
+            }}
           </h2>
           <button type="button" aria-label="关闭弹窗" @click="closeActionDialog">
             <Close :size="18" />
@@ -2423,7 +2978,13 @@ const formatTime = (timestamp: number) =>
             </label>
           </template>
           <template v-else>
-            <p>删除后将从当前列表移除。</p>
+            <p>
+              {{
+                actionDialog.type === 'delete-session'
+                  ? '删除后，这条对话和其中的消息会从当前列表移除。'
+                  : '删除后，这个项目和项目里的对话会从当前列表移除。'
+              }}
+            </p>
             <strong>{{ actionDialog.value }}</strong>
           </template>
         </div>

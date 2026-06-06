@@ -3,9 +3,12 @@ import { defineStore } from 'pinia'
 export type MessageRole = 'user' | 'assistant'
 
 export interface ChatMessage {
+  branchLabel?: string
+  branchOf?: string
   id: string
   role: MessageRole
   content: string
+  favorited?: boolean
   reasoningContent?: string
   reasoningEndedAt?: number
   reasoningStartedAt?: number
@@ -23,6 +26,8 @@ export interface ChatSession {
 
 interface SendOptions {
   agentMode?: boolean
+  branchLabel?: string
+  branchOf?: string
   contextClearedAt?: number
   deepThinking?: boolean
   maxTokens?: number
@@ -86,8 +91,17 @@ type StreamReply = {
 }
 
 const summarizeTitle = (content: string) => {
-  const normalized = content.trim().replace(/\s+/g, ' ')
-  return normalized.length > 18 ? `${normalized.slice(0, 18)}...` : normalized || '新的对话'
+  const normalized = content
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:请|麻烦|帮我|请帮我|能不能|可以|可以帮我)?\s*(?:详细)?(?:解释|介绍|分析|说明|说说|聊聊|总结|写|生成|润色|翻译|优化)(?:一下|下|一下子)?\s*[：:，,。.]?\s*/i, '')
+    .replace(/^(?:关于|有关|对于)\s*/, '')
+    .replace(/^(?:什么是|什么叫|如何|怎么|怎样)\s*/, '')
+    .trim()
+  const fallback = content.trim().replace(/\s+/g, ' ')
+  const title = normalized || fallback
+
+  return title.length > 18 ? `${title.slice(0, 18)}...` : title || '新的对话'
 }
 
 const finalAnswerStartPattern =
@@ -795,12 +809,18 @@ export const useChatStore = defineStore('chat', {
       if (!session) return
 
       const now = Date.now()
-      session.messages.push({
+      const branchSourceIndex = options.branchOf
+        ? session.messages.findIndex((message) => message.id === options.branchOf)
+        : -1
+      const userMessage: ChatMessage = {
+        branchLabel: options.branchLabel,
+        branchOf: options.branchOf,
         id: createId(),
         role: 'user',
         content: trimmedContent,
         createdAt: now,
-      })
+      }
+      session.messages.push(userMessage)
 
       if (session.messages.length === 1) {
         session.title = summarizeTitle(trimmedContent)
@@ -818,6 +838,8 @@ export const useChatStore = defineStore('chat', {
       const ensureAssistantMessage = () => {
         if (!assistantMessage) {
           assistantMessage = {
+            branchLabel: options.branchLabel,
+            branchOf: options.branchOf,
             id: createId(),
             role: 'assistant',
             content: '',
@@ -834,7 +856,10 @@ export const useChatStore = defineStore('chat', {
         return assistantMessage
       }
 
-      const reply = await this.requestAssistantReply(session.messages, {
+      const contextMessages =
+        branchSourceIndex >= 0 ? [...session.messages.slice(0, branchSourceIndex), userMessage] : session.messages
+
+      const reply = await this.requestAssistantReply(contextMessages, {
         agentMode: options.agentMode,
         contextClearedAt: session.contextClearedAt,
         deepThinking: options.deepThinking,
