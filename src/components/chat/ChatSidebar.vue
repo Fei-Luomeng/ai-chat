@@ -117,6 +117,10 @@
                 <EditPen :size="16" />
                 <span>重命名对话</span>
               </button>
+              <button type="button" @click="emit('archiveSession', session.id)">
+                <Box :size="16" />
+                <span>归档对话</span>
+              </button>
               <button type="button" class="danger" @click="emit('deleteSession', session.id)">
                 <Delete :size="16" />
                 <span>删除对话</span>
@@ -148,6 +152,10 @@
     </div>
 
     <div class="sidebar-footer">
+      <button class="footer-action" type="button" @click="emit('openConversationManager')">
+        <Box :size="17" />
+        <span>归档与回收站</span>
+      </button>
       <button class="footer-action" type="button" @click="emit('openSettings')">
         <Setting :size="17" />
         <span>设置</span>
@@ -166,6 +174,7 @@
 import {
   ArrowDown,
   ArrowRight,
+  Box,
   ChatDotRound,
   Close,
   Connection,
@@ -203,6 +212,7 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
+  archiveSession: [sessionId: string]
   close: []
   createProject: []
   deleteProject: [projectName: string]
@@ -210,6 +220,7 @@ const emit = defineEmits<{
   manageFavorites: []
   newChat: []
   openSearch: []
+  openConversationManager: []
   openSettings: []
   renameProject: [projectName: string]
   renameSession: [session: ChatSession]

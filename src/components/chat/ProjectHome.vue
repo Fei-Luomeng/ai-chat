@@ -21,14 +21,17 @@
         :agent-mode="agentMode"
         :deep-thinking="deepThinking"
         :draft="draft"
+        :is-listening="isListening"
         :placeholder="`${projectName}中的新聊天`"
         :responding="responding"
         variant="project"
+        :voice-input-supported="voiceInputSupported"
         :web-search="webSearch"
         @send="emit('send')"
         @stop="emit('stop')"
         @toggle-agent-mode="emit('toggleAgentMode')"
         @toggle-deep-thinking="emit('toggleDeepThinking')"
+        @toggle-voice-input="emit('toggleVoiceInput')"
         @toggle-web-search="emit('toggleWebSearch')"
         @update-draft="emit('updateDraft', $event)"
       />
@@ -73,6 +76,10 @@
               <EditPen :size="16" />
               <span>重命名对话</span>
             </button>
+            <button type="button" @click.stop="emit('archiveSession', session.id)">
+              <Box :size="16" />
+              <span>归档对话</span>
+            </button>
             <button type="button" class="danger" @click.stop="emit('deleteSession', session.id)">
               <Delete :size="16" />
               <span>删除对话</span>
@@ -86,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { ChatDotRound, Connection, Delete, EditPen, FolderOpened, MoreFilled } from '@element-plus/icons-vue'
+import { Box, ChatDotRound, Connection, Delete, EditPen, FolderOpened, MoreFilled } from '@element-plus/icons-vue'
 
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import PromptTemplateBar from '@/components/chat/PromptTemplateBar.vue'
@@ -99,17 +106,20 @@ defineProps<{
   description: string
   draft: string
   deepThinking: boolean
+  isListening: boolean
   openActionMenu: string
   projectName: string
   responding: boolean
   sessions: ChatSession[]
   templates: PromptTemplate[]
+  voiceInputSupported: boolean
   webSearch: boolean
   getPreview: (session: ChatSession) => string
   formatTime: (timestamp: number) => string
 }>()
 
 const emit = defineEmits<{
+  archiveSession: [sessionId: string]
   applyTemplate: [template: PromptTemplate]
   deleteSession: [sessionId: string]
   manageTemplates: []
@@ -120,6 +130,7 @@ const emit = defineEmits<{
   toggleActionMenu: [menuId: string, event: MouseEvent]
   toggleAgentMode: []
   toggleDeepThinking: []
+  toggleVoiceInput: []
   togglePinned: [session: ChatSession]
   toggleWebSearch: []
   updateDescription: [value: string]

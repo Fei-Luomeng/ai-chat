@@ -4,6 +4,7 @@ interface GlobalInteractionsOptions {
   actionDialog: Ref<unknown | null>
   closeActionDialog: () => void
   closeContextClearDialog: () => void
+  closeConversationManager: () => void
   closeExportDialog: () => void
   closeFavoritesManager: () => void
   closeSearch: () => void
@@ -12,6 +13,7 @@ interface GlobalInteractionsOptions {
   closeTemplateManager: () => void
   hasDraft: ComputedRef<boolean>
   isContextClearOpen: Ref<boolean>
+  isConversationManagerOpen: Ref<boolean>
   isExportOpen: Ref<boolean>
   isFavoritesOpen: Ref<boolean>
   isMobileViewport: Ref<boolean>
@@ -39,6 +41,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
     options.isSessionSearchOpen.value ||
     options.isFavoritesOpen.value ||
     options.isContextClearOpen.value ||
+    options.isConversationManagerOpen.value ||
     options.isTemplateManagerOpen.value ||
     options.isExportOpen.value ||
     options.isSettingsOpen.value ||
@@ -60,6 +63,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
       [options.isSessionSearchOpen, options.closeSessionSearch],
       [options.isFavoritesOpen, options.closeFavoritesManager],
       [options.isContextClearOpen, options.closeContextClearDialog],
+      [options.isConversationManagerOpen, options.closeConversationManager],
       [options.isTemplateManagerOpen, options.closeTemplateManager],
       [options.isExportOpen, options.closeExportDialog],
       [options.isSettingsOpen, options.closeSettings],

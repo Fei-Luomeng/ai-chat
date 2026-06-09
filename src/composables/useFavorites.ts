@@ -30,13 +30,17 @@ export const useFavorites = (options: FavoritesOptions) => {
   const favoriteScope = ref('all')
 
   const favoriteResults = computed<FavoriteResult[]>(() => [
-    ...options.chatSessions.flatMap((session) =>
+    ...options.chatSessions
+      .filter((session) => !session.archivedAt && !session.deletedAt)
+      .flatMap((session) =>
       session.messages
         .filter((message) => message.role === 'assistant' && message.favorited)
         .map((message) => ({ id: `chat-${session.id}-${message.id}`, message, session, title: session.title })),
-    ),
+      ),
     ...Object.entries(options.projectSessions.value).flatMap(([projectName, sessions]) =>
-      sessions.flatMap((session) =>
+      sessions
+        .filter((session) => !session.archivedAt && !session.deletedAt)
+        .flatMap((session) =>
         session.messages
           .filter((message) => message.role === 'assistant' && message.favorited)
           .map((message) => ({
@@ -46,7 +50,7 @@ export const useFavorites = (options: FavoritesOptions) => {
             session,
             title: `${projectName} / ${session.title}`,
           })),
-      ),
+        ),
     ),
   ])
 

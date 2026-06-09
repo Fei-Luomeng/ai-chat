@@ -19,7 +19,7 @@ import { useMessageBranches } from '@/composables/useMessageBranches'
 import { useProjectManagement } from '@/composables/useProjectManagement'
 import { usePromptTemplates } from '@/composables/usePromptTemplates'
 import { useReasoningDisplay } from '@/composables/useReasoningDisplay'
-import type { ModelSettings, PromptTemplate } from '@/types/ui'
+import type { MemoryItem, ModelSettings, PromptTemplate } from '@/types/ui'
 
 export const useChatApp = () => {
 interface AppSendOptions {
@@ -28,15 +28,21 @@ interface AppSendOptions {
   branchOf?: string
   deepThinking: boolean
   maxTokens?: number
+  systemPrompt?: string
   temperature: number
   webSearch: boolean
 }
 
 interface PersistedAppState {
   activeProject?: string
+  activeProjectSessionId?: string
   avatarImage?: string
+  customInstructions?: string
+  memories?: MemoryItem[]
   modelSettings?: ModelSettings
   profileName?: string
+  currentMode?: 'chat' | 'project'
+  isProjectHome?: boolean
   promptTemplates?: PromptTemplate[]
   projectDescriptions?: Record<string, string>
   projects?: string[]
@@ -54,7 +60,7 @@ const normalizeMessages = (messages: ChatMessage[]) =>
   messages.filter(
     (message, index) =>
       !(index === 0 && message.role === 'assistant' && message.content === LEGACY_WELCOME_CONTENT) &&
-      !(message.role === 'assistant' && !message.content.trim()),
+      !(message.role === 'assistant' && !message.content.trim() && !message.error),
   )
 
 const normalizeProjectSessions = (sessions: Record<string, ChatSession[]>) =>
@@ -90,6 +96,10 @@ const readToolState = () => {
 const chatStore = useChatStore()
 const storedAppState = readAppState()
 const storedToolState = readToolState()
+const storedMode =
+  storedAppState.currentMode === 'project' && storedAppState.activeProject
+    ? 'project'
+    : 'chat'
 const draft = ref('')
 const messagesRef = ref<HTMLElement | null>(null)
 const editingMessageId = ref('')
@@ -99,14 +109,22 @@ const isMobileViewport = ref(
 )
 const isSidebarCollapsed = ref(isMobileViewport.value)
 const isContextClearOpen = ref(false)
+const isConversationManagerOpen = ref(false)
+const conversationManagerMode = ref<'archived' | 'trash'>('archived')
 const isProjectsOpen = ref(true)
 const isRecentOpen = ref(true)
-const activeProject = ref(storedAppState.activeProject ?? '')
-const currentMode = ref<'chat' | 'project'>('chat')
-const isProjectHome = ref(false)
+const activeProject = ref(storedMode === 'project' ? storedAppState.activeProject ?? '' : '')
+const currentMode = ref<'chat' | 'project'>(storedMode)
+const isProjectHome = ref(
+  storedMode === 'project'
+    ? storedAppState.isProjectHome ?? !storedAppState.activeProjectSessionId
+    : false,
+)
 const isPendingNewSession = ref(false)
 const isPendingProjectSession = ref(false)
-const activeProjectSessionId = ref('')
+const activeProjectSessionId = ref(
+  storedMode === 'project' ? storedAppState.activeProjectSessionId ?? '' : '',
+)
 const isProjectResponding = ref(false)
 const projectStreamingMessageContent = ref('')
 const projectStreamingMessageId = ref('')
@@ -115,6 +133,7 @@ const projectStreamingReasoningEndedAt = ref(0)
 const projectStreamingReasoningStartedAt = ref(0)
 const liveNow = ref(Date.now())
 const activeMessageId = ref('')
+const messageRenderLimit = ref(80)
 const highlightedMessageId = ref('')
 const hoveredNavigatorItem = ref<{ label: string; right: number; top: number } | null>(null)
 const openActionMenu = ref('')
@@ -122,13 +141,19 @@ const projectSessions = ref<Record<string, ChatSession[]>>({})
 const projectDescriptions = ref<Record<string, string>>(storedAppState.projectDescriptions ?? {})
 const projects = ref<string[]>(storedAppState.projects ?? [])
 let projectAbortController: AbortController | null = null
+let continuationAbortController: AbortController | null = null
 let liveTimer: number | undefined
 let searchHighlightTimer: number | undefined
 
 const createId = () => crypto.randomUUID()
 const {
+  addDraftMemory,
   avatarImage,
   closeSettings,
+  customInstructions,
+  draftCustomInstructions,
+  draftMemories,
+  draftMemory,
   draftModelSettings,
   draftProfileName,
   draftThemeMode,
@@ -137,10 +162,12 @@ const {
   isDeepThinking,
   isSettingsOpen,
   isWebSearch,
+  memories,
   modelSettings,
   openSettings,
   persistToolState,
   profileName,
+  removeDraftMemory,
   saveSettings,
   savedAvatarDisplay,
   themeMode,
@@ -150,6 +177,8 @@ const {
 } = useAppSettings({
   avatarImage: storedAppState.avatarImage,
   closeMobileSidebar: () => closeMobileSidebar(),
+  customInstructions: storedAppState.customInstructions,
+  memories: storedAppState.memories,
   modelSettings: storedAppState.modelSettings,
   profileName: storedAppState.profileName,
   storedAgentMode: storedToolState.agentMode,
@@ -205,7 +234,9 @@ const activeProjectSession = computed(() => {
   return projectSessions.value[activeProject.value]?.find((session) => session.id === activeProjectSessionId.value)
 })
 
-const activeSession = computed(() => activeProjectSession.value ?? chatStore.activeSession)
+const activeSession = computed(() =>
+  currentMode.value === 'project' ? activeProjectSession.value : chatStore.activeSession,
+)
 const hasDraft = computed(() => draft.value.trim().length > 0)
 const isFreshSession = computed(
   () => isPendingNewSession.value || isPendingProjectSession.value || (activeSession.value?.messages.length ?? 0) === 0,
@@ -249,6 +280,30 @@ const {
 
 projectSessions.value = normalizeProjectSessions(storedAppState.projectSessions ?? {})
 
+if (currentMode.value === 'project') {
+  const projectExists = projects.value.includes(activeProject.value)
+  const restoredSession = activeProjectSessionId.value
+    ? projectSessions.value[activeProject.value]?.find(
+        (session) =>
+          session.id === activeProjectSessionId.value &&
+          !session.archivedAt &&
+          !session.deletedAt,
+      )
+    : undefined
+
+  if (!projectExists) {
+    currentMode.value = 'chat'
+    activeProject.value = ''
+    activeProjectSessionId.value = ''
+    isProjectHome.value = false
+  } else if (!restoredSession) {
+    activeProjectSessionId.value = ''
+    isProjectHome.value = true
+  } else {
+    isProjectHome.value = false
+  }
+}
+
 const sortSessions = (sessions: ChatSession[]) =>
   [...sessions].sort((left, right) => {
     if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
@@ -256,13 +311,46 @@ const sortSessions = (sessions: ChatSession[]) =>
     return right.updatedAt - left.updatedAt
   })
 
-const sidebarSessions = computed(() => sortSessions(chatStore.sessions))
+const sidebarSessions = computed(() =>
+  sortSessions(chatStore.sessions.filter((session) => !session.archivedAt && !session.deletedAt)),
+)
 
 const activeProjectSessions = computed(() => {
   if (!activeProject.value) return []
 
-  return sortSessions(projectSessions.value[activeProject.value] ?? [])
+  return sortSessions(
+    (projectSessions.value[activeProject.value] ?? []).filter(
+      (session) => !session.archivedAt && !session.deletedAt,
+    ),
+  )
 })
+
+const managedConversations = computed(() => [
+  ...chatStore.sessions.map((session) => ({ projectName: '', session })),
+  ...Object.entries(projectSessions.value).flatMap(([projectName, sessions]) =>
+    sessions.map((session) => ({ projectName, session })),
+  ),
+])
+
+const archivedConversations = computed(() =>
+  managedConversations.value
+    .filter((item) => item.session.archivedAt && !item.session.deletedAt)
+    .map((item) => ({ ...item, timestamp: item.session.archivedAt ?? item.session.updatedAt }))
+    .sort((left, right) => right.timestamp - left.timestamp),
+)
+
+const trashedConversations = computed(() =>
+  managedConversations.value
+    .filter((item) => item.session.deletedAt)
+    .map((item) => ({ ...item, timestamp: item.session.deletedAt ?? item.session.updatedAt }))
+    .sort((left, right) => right.timestamp - left.timestamp),
+)
+
+const managedConversationItems = computed(() =>
+  conversationManagerMode.value === 'archived'
+    ? archivedConversations.value
+    : trashedConversations.value,
+)
 
 const {
   getBranchSwitcher,
@@ -276,6 +364,21 @@ const {
   persistChatSessions: () => persistChatSessions(),
   updateActiveMessageFromScroll: () => updateActiveMessageFromScroll(),
 })
+
+const renderedMessages = computed(() =>
+  visibleMessages.value.slice(-messageRenderLimit.value),
+)
+const hiddenMessageCount = computed(() =>
+  Math.max(0, visibleMessages.value.length - renderedMessages.value.length),
+)
+
+const loadEarlierMessages = async () => {
+  const element = messagesRef.value
+  const previousHeight = element?.scrollHeight ?? 0
+  messageRenderLimit.value += 80
+  await nextTick()
+  if (element) element.scrollTop += element.scrollHeight - previousHeight
+}
 
 const messageNavigatorItems = computed(() =>
   visibleMessages.value
@@ -291,7 +394,12 @@ const messageNavigatorItems = computed(() =>
 const persistAppState = () => {
   const state: PersistedAppState = {
     activeProject: activeProject.value,
+    activeProjectSessionId: activeProjectSessionId.value,
     avatarImage: avatarImage.value,
+    customInstructions: customInstructions.value,
+    memories: memories.value,
+    currentMode: currentMode.value,
+    isProjectHome: isProjectHome.value,
     modelSettings: modelSettings.value,
     profileName: profileName.value,
     promptTemplates: promptTemplates.value,
@@ -316,6 +424,45 @@ const persistChatSessions = () => {
   }
 }
 
+const openConversationManager = () => {
+  isConversationManagerOpen.value = true
+  if (isMobileViewport.value) isSidebarCollapsed.value = true
+}
+
+const closeConversationManager = () => {
+  isConversationManagerOpen.value = false
+}
+
+const restoreManagedConversation = (item: { projectName: string; session: ChatSession }) => {
+  item.session.archivedAt = undefined
+  item.session.deletedAt = undefined
+  item.session.updatedAt = Date.now()
+  if (item.projectName) persistAppState()
+  else chatStore.restoreSession(item.session.id)
+  ElMessage.success('对话已恢复')
+}
+
+const trashManagedConversation = (item: { projectName: string; session: ChatSession }) => {
+  item.session.archivedAt = undefined
+  item.session.deletedAt = Date.now()
+  item.session.updatedAt = Date.now()
+  if (item.projectName) persistAppState()
+  else chatStore.trashSession(item.session.id)
+  ElMessage.success('已移到回收站')
+}
+
+const removeManagedConversation = (item: { projectName: string; session: ChatSession }) => {
+  if (item.projectName) {
+    projectSessions.value[item.projectName] = (projectSessions.value[item.projectName] ?? []).filter(
+      (session) => session.id !== item.session.id,
+    )
+    persistAppState()
+  } else {
+    chatStore.deleteSession(item.session.id)
+  }
+  ElMessage.success('对话已彻底删除')
+}
+
 const scrollToBottom = async () => {
   await nextTick()
   if (!messagesRef.value) return
@@ -338,6 +485,13 @@ const updateActiveMessageFromScroll = () => {
 
 const jumpToMessage = async (messageId: string) => {
   revealMessageBranch(messageId)
+  const messageIndex = visibleMessages.value.findIndex((message) => message.id === messageId)
+  if (messageIndex >= 0) {
+    messageRenderLimit.value = Math.max(
+      messageRenderLimit.value,
+      visibleMessages.value.length - messageIndex,
+    )
+  }
   await nextTick()
   const row = messagesRef.value?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
   if (!row) return
@@ -491,6 +645,13 @@ const getSendOptions = (): AppSendOptions => ({
   agentMode: isAgentMode.value || isToolButtonPressed('agent-mode'),
   deepThinking: isDeepThinking.value || isToolButtonPressed('deep-thinking'),
   maxTokens: modelSettings.value.maxTokens || undefined,
+  systemPrompt: [
+    '你是 AI Chat，一个简洁、可靠的中文 AI 助手。回答要自然、清楚，优先解决用户当前问题。',
+    customInstructions.value ? `用户自定义指令：\n${customInstructions.value}` : '',
+    memories.value.length
+      ? `用户明确保存的记忆：\n${memories.value.map((item) => `- ${item.content}`).join('\n')}`
+      : '',
+  ].filter(Boolean).join('\n\n'),
   temperature: modelSettings.value.temperature,
   webSearch: isWebSearch.value || isToolButtonPressed('web-search'),
 })
@@ -594,10 +755,12 @@ const cloneMessageForBranch = (message: ChatMessage): ChatMessage => ({
   id: createId(),
   role: message.role,
   content: message.content,
+  error: message.error,
   reasoningContent: message.reasoningContent,
   reasoningEndedAt: message.reasoningEndedAt,
   reasoningStartedAt: message.reasoningStartedAt,
   sources: message.sources?.map((source) => ({ ...source })),
+  truncated: message.truncated,
   createdAt: message.createdAt,
 })
 
@@ -717,6 +880,105 @@ const regenerateAssistantMessage = async (message: ChatMessage) => {
   await resubmitUserMessage(userMessage.id)
 }
 
+const continueAssistantMessage = async (message: ChatMessage) => {
+  const session = activeSession.value
+  if (!session || isResponding.value || message.role !== 'assistant' || !message.truncated) return
+
+  const messageIndex = session.messages.findIndex((item) => item.id === message.id)
+  if (messageIndex < 0) return
+
+  const originalContent = message.content.trimEnd()
+  const continuationPrompt: ChatMessage = {
+    id: createId(),
+    role: 'user',
+    content: '请直接从上一条回答中断的位置继续，不要重复已经回答的内容，也不要添加“继续”等说明。',
+    createdAt: Date.now(),
+  }
+  const contextMessages = [...session.messages.slice(0, messageIndex + 1), continuationPrompt]
+  const sendOptions = getSendOptions()
+  let nextContent = originalContent
+  let responseError = ''
+  let responseTruncated = false
+  let hasReceivedToken = false
+
+  message.error = undefined
+  message.truncated = undefined
+  const controller = new AbortController()
+  continuationAbortController = controller
+
+  if (isProjectMode.value) {
+    isProjectResponding.value = true
+    projectStreamingMessageId.value = message.id
+    projectStreamingMessageContent.value = originalContent
+  } else {
+    chatStore.isResponding = true
+    chatStore.streamingMessageId = message.id
+    chatStore.streamingMessageContent = originalContent
+  }
+
+  const appendToken = (token: string) => {
+    if (!hasReceivedToken) {
+      hasReceivedToken = true
+      nextContent += nextContent && !/\s$/.test(nextContent) ? '\n\n' : ''
+    }
+    nextContent += token
+    message.content = nextContent
+    if (isProjectMode.value) projectStreamingMessageContent.value = nextContent
+    else chatStore.streamingMessageContent = nextContent
+  }
+
+  await chatStore.requestAssistantReply(contextMessages, {
+    agentMode: sendOptions.agentMode,
+    contextClearedAt: session.contextClearedAt,
+    deepThinking: false,
+    maxTokens: sendOptions.maxTokens,
+    temperature: sendOptions.temperature,
+    webSearch: sendOptions.webSearch,
+    onError: (error) => {
+      responseError = error
+    },
+    onFinish: (truncated) => {
+      responseTruncated = truncated
+    },
+    onSources: (sources) => {
+      const existingSources = message.sources ?? []
+      message.sources = [...existingSources]
+      sources.forEach((source) => {
+        if (!message.sources?.some((item) => item.url === source.url)) message.sources?.push(source)
+      })
+    },
+    onToken: appendToken,
+    signal: controller.signal,
+    systemPrompt: isProjectMode.value
+      ? [
+          sendOptions.systemPrompt,
+          `当前项目：${activeProject.value}`,
+          projectDescriptions.value[activeProject.value]
+            ? `项目说明：${projectDescriptions.value[activeProject.value]}`
+            : '',
+        ].filter(Boolean).join('\n\n')
+      : sendOptions.systemPrompt,
+  })
+
+  if (controller.signal.aborted) return
+  continuationAbortController = null
+  message.error = responseError || undefined
+  message.truncated = responseTruncated || undefined
+  session.updatedAt = Date.now()
+
+  if (isProjectMode.value) {
+    isProjectResponding.value = false
+    projectStreamingMessageId.value = ''
+    projectStreamingMessageContent.value = ''
+    persistAppState()
+  } else {
+    chatStore.isResponding = false
+    chatStore.streamingMessageId = ''
+    chatStore.streamingMessageContent = ''
+    persistChatSessions()
+  }
+}
+
 const showNavigatorTooltip = (
   item: { fullLabel: string },
   event: Event,
@@ -747,12 +1009,28 @@ watch(
 watch(
   () => activeSession.value?.id,
   () => {
+    messageRenderLimit.value = 80
     void nextTick(updateActiveMessageFromScroll)
   },
 )
 
 watch(
-  [projects, projectSessions, projectDescriptions, promptTemplates, modelSettings, activeProject, profileName, avatarImage, themeMode],
+  [
+    projects,
+    projectSessions,
+    projectDescriptions,
+    promptTemplates,
+    modelSettings,
+    customInstructions,
+    memories,
+    activeProject,
+    activeProjectSessionId,
+    currentMode,
+    isProjectHome,
+    profileName,
+    avatarImage,
+    themeMode,
+  ],
   () => {
     persistAppState()
   },
@@ -819,7 +1097,9 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
   let assistantMessage: ChatMessage | null = null
   let contentFallbackBuffer = ''
   let hasProviderReasoning = false
+  let responseError = ''
   let responseSources: WebSearchSource[] = []
+  let responseTruncated = false
   const ensureProjectAssistantMessage = () => {
     if (!assistantMessage) {
       assistantMessage = {
@@ -851,6 +1131,13 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
     maxTokens: sendOptions.maxTokens,
     temperature: sendOptions.temperature,
     webSearch: sendOptions.webSearch,
+    onError: (message) => {
+      responseError = message
+      ensureProjectAssistantMessage().error = message
+    },
+    onFinish: (truncated) => {
+      responseTruncated = truncated
+    },
     onSources: (sources) => {
       responseSources = sources
       const message = assistantMessage as ChatMessage | null
@@ -921,10 +1208,10 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
     },
     signal: projectAbortController.signal,
     systemPrompt: [
-      '你是 AI Chat，一个简洁、可靠的中文 AI 助手。回答要自然、清楚，优先解决用户当前问题。',
+      sendOptions.systemPrompt,
       `当前项目：${activeProject.value}`,
       projectDescriptions.value[activeProject.value] ? `项目说明：${projectDescriptions.value[activeProject.value]}` : '',
-    ].filter(Boolean).join('\n'),
+    ].filter(Boolean).join('\n\n'),
   })
   projectAbortController = null
   if (!isProjectResponding.value) return
@@ -976,10 +1263,12 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
     }
 
     completedAssistantMessage.content = finalContent
+    completedAssistantMessage.error = responseError || undefined
     completedAssistantMessage.reasoningContent = finalReasoning || undefined
     completedAssistantMessage.reasoningStartedAt = reasoningStartedAt || undefined
     completedAssistantMessage.reasoningEndedAt = reasoningEndedAt || undefined
     completedAssistantMessage.sources = responseSources.length ? responseSources : undefined
+    completedAssistantMessage.truncated = responseTruncated || undefined
   } else if (reply) {
     const fallbackSplit = sendOptions.deepThinking ? splitReasoningFromAnswer(reply) : null
     const createdAt = Date.now()
@@ -993,6 +1282,7 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
       reasoningEndedAt: fallbackSplit ? createdAt : undefined,
       reasoningStartedAt: fallbackSplit ? createdAt : undefined,
       sources: responseSources.length ? responseSources : undefined,
+      truncated: responseTruncated || undefined,
       createdAt,
     }
     session.messages.push(assistantMessage)
@@ -1010,6 +1300,7 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
 const {
   actionDialog,
   actionMenuStyle,
+  archiveSession,
   closeActionDialog,
   confirmActionDialog,
   createProjectSession,
@@ -1027,11 +1318,12 @@ const {
 } = useProjectManagement({
   activeProject,
   activeProjectSessionId,
+  archiveChatSession: (sessionId) => chatStore.archiveSession(sessionId),
   chatSessions: chatStore.sessions,
   closeMobileSidebar: () => closeMobileSidebar(),
   createId,
   currentMode,
-  deleteChatSession: (sessionId) => chatStore.deleteSession(sessionId),
+  deleteChatSession: (sessionId) => chatStore.trashSession(sessionId),
   draft,
   getSendOptions,
   isPendingNewSession,
@@ -1086,12 +1378,13 @@ const removeInterruptedAssistant = (session: ChatSession | undefined, streamingM
   if (!session) return
 
   const lastMessage = session.messages.at(-1)
-  const shouldRemoveAssistant =
-    lastMessage?.role === 'assistant' &&
-    (!lastMessage.content.trim() || Boolean(streamingMessageId && lastMessage.id === streamingMessageId))
+  const shouldRemoveAssistant = lastMessage?.role === 'assistant' && !lastMessage.content.trim() && !lastMessage.error
 
   if (shouldRemoveAssistant) {
     session.messages.splice(-1, 1)
+    session.updatedAt = Date.now()
+  } else if (lastMessage?.role === 'assistant' && streamingMessageId && lastMessage.id === streamingMessageId) {
+    lastMessage.truncated = true
     session.updatedAt = Date.now()
   }
 }
@@ -1104,6 +1397,8 @@ const stopResponding = () => {
   chatStore.stopResponding()
   projectAbortController?.abort()
   projectAbortController = null
+  continuationAbortController?.abort()
+  continuationAbortController = null
 
   if (isProjectMode.value) {
     removeInterruptedAssistant(session, projectStreamingId)
@@ -1132,6 +1427,7 @@ const { focusDraftInput } = useGlobalInteractions({
   actionDialog,
   closeActionDialog,
   closeContextClearDialog,
+  closeConversationManager,
   closeExportDialog,
   closeFavoritesManager,
   closeSearch,
@@ -1140,6 +1436,7 @@ const { focusDraftInput } = useGlobalInteractions({
   closeTemplateManager,
   hasDraft,
   isContextClearOpen,
+  isConversationManagerOpen,
   isExportOpen,
   isFavoritesOpen,
   isMobileViewport,
@@ -1173,8 +1470,12 @@ const formatTime = (timestamp: number) =>
   }).format(timestamp)
 
   return {
+    addDraftMemory,
     chatStore,
     draft,
+    draftCustomInstructions,
+    draftMemories,
+    draftMemory,
     messagesRef,
     editingMessageId,
     editingDraft,
@@ -1186,6 +1487,8 @@ const formatTime = (timestamp: number) =>
     isFavoritesOpen,
     isTemplateManagerOpen,
     isContextClearOpen,
+    isConversationManagerOpen,
+    conversationManagerMode,
     searchText,
     sessionSearchText,
     favoriteSearchText,
@@ -1232,16 +1535,21 @@ const formatTime = (timestamp: number) =>
     sessionSearchResults,
     sidebarSessions,
     activeProjectSessions,
+    archivedConversations,
     favoriteResults,
     visibleMessages,
     favoriteScopeOptions,
     filteredFavoriteResults,
     messageNavigatorItems,
+    managedConversationItems,
+    renderedMessages,
+    hiddenMessageCount,
     exportableMessages,
     selectedExportMessages,
     savedAvatarDisplay,
     updateActiveMessageFromScroll,
     jumpToMessage,
+    loadEarlierMessages,
     copyRenderedCode,
     getReasoningContent,
     getAnswerContent,
@@ -1251,8 +1559,12 @@ const formatTime = (timestamp: number) =>
     toggleMessageFavorite,
     switchFromFavorite,
     openFavoritesManager,
+    openConversationManager,
     closeFavoritesManager,
+    closeConversationManager,
     removeFavorite,
+    removeDraftMemory,
+    removeManagedConversation,
     openExportDialog,
     closeExportDialog,
     toggleExportMessage,
@@ -1273,6 +1585,7 @@ const formatTime = (timestamp: number) =>
     savePromptTemplate,
     deletePromptTemplate,
     restoreDefaultTemplates,
+    restoreManagedConversation,
     openContextClearDialog,
     closeContextClearDialog,
     clearCurrentContext,
@@ -1284,6 +1597,7 @@ const formatTime = (timestamp: number) =>
     branchFromAssistantMessage,
     submitEditedMessage,
     regenerateAssistantMessage,
+    continueAssistantMessage,
     showNavigatorTooltip,
     hideNavigatorTooltip,
     send,
@@ -1306,6 +1620,9 @@ const formatTime = (timestamp: number) =>
     deleteProject,
     renameSession,
     deleteSession,
+    archiveSession,
+    trashManagedConversation,
+    trashedConversations,
     closeActionDialog,
     confirmActionDialog,
     handleAvatarUpload,

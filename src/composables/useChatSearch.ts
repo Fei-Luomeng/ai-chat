@@ -44,9 +44,13 @@ export const useChatSearch = (options: ChatSearchOptions) => {
     if (!keyword) return []
 
     const allSessions: Array<{ projectName?: string; session: ChatSession }> = [
-      ...options.chatSessions.map((session) => ({ projectName: undefined, session })),
+      ...options.chatSessions
+        .filter((session) => !session.archivedAt && !session.deletedAt)
+        .map((session) => ({ projectName: undefined, session })),
       ...Object.entries(options.projectSessions.value).flatMap(([projectName, sessions]) =>
-        sessions.map((session) => ({ projectName, session })),
+        sessions
+          .filter((session) => !session.archivedAt && !session.deletedAt)
+          .map((session) => ({ projectName, session })),
       ),
     ]
 

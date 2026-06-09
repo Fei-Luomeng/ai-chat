@@ -15,14 +15,14 @@
           />
         </label>
         <template v-else>
-          <p>{{ dialog.type === 'delete-session' ? '删除后，这条对话和其中的消息会从当前列表移除。' : '删除后，这个项目和项目里的对话会从当前列表移除。' }}</p>
+          <p>{{ dialog.type === 'delete-session' ? '这条对话会移到回收站，之后可以恢复或彻底删除。' : '删除后，这个项目和项目里的对话会从当前列表移除。' }}</p>
           <strong>{{ dialog.value }}</strong>
         </template>
       </div>
       <footer>
         <button class="cancel-settings" type="button" @click="emit('close')">取消</button>
         <button class="confirm-primary" :class="{ danger: dialog.type.startsWith('delete') }" type="button" @click="emit('confirm')">
-          {{ dialog.type === 'create-project' || dialog.type.startsWith('rename') ? '保存' : '删除' }}
+          {{ dialog.type === 'create-project' || dialog.type.startsWith('rename') ? '保存' : dialog.type === 'delete-session' ? '移到回收站' : '删除' }}
         </button>
       </footer>
     </section>

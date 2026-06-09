@@ -9,6 +9,7 @@
         v-for="(source, sourceIndex) in sources"
         :key="source.url"
         class="source-card"
+        :data-source-index="sourceIndex"
         :href="source.url"
         target="_blank"
         rel="noreferrer"

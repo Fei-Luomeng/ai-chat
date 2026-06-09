@@ -17,13 +17,16 @@
         :agent-mode="agentMode"
         :deep-thinking="deepThinking"
         :draft="draft"
+        :is-listening="isListening"
         placeholder="给 AI Chat 发送消息"
         :responding="responding"
+        :voice-input-supported="voiceInputSupported"
         :web-search="webSearch"
         @send="emit('send')"
         @stop="emit('stop')"
         @toggle-agent-mode="emit('toggleAgentMode')"
         @toggle-deep-thinking="emit('toggleDeepThinking')"
+        @toggle-voice-input="emit('toggleVoiceInput')"
         @toggle-web-search="emit('toggleWebSearch')"
         @update-draft="emit('updateDraft', $event)"
       />
@@ -43,9 +46,11 @@ defineProps<{
   deepThinking: boolean
   draft: string
   isProjectMode: boolean
+  isListening: boolean
   responding: boolean
   savedAvatarDisplay: string
   templates: PromptTemplate[]
+  voiceInputSupported: boolean
   webSearch: boolean
 }>()
 
@@ -56,6 +61,7 @@ const emit = defineEmits<{
   stop: []
   toggleAgentMode: []
   toggleDeepThinking: []
+  toggleVoiceInput: []
   toggleWebSearch: []
   updateDraft: [value: string]
 }>()

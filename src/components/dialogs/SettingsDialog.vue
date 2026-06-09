@@ -67,6 +67,44 @@
             </label>
           </div>
         </section>
+        <section class="personalization-panel">
+          <h3>个性化</h3>
+          <label>
+            <span>自定义指令</span>
+            <textarea
+              :value="customInstructions"
+              placeholder="例如：回答简洁一些，代码示例优先使用 TypeScript。"
+              @input="emit('updateCustomInstructions', ($event.target as HTMLTextAreaElement).value)"
+            />
+          </label>
+          <div class="memory-setting">
+            <div class="memory-heading">
+              <span>记忆</span>
+              <small>保存在当前浏览器</small>
+            </div>
+            <div class="memory-input">
+              <input
+                :value="draftMemory"
+                placeholder="例如：我是一名前端开发者"
+                @input="emit('updateDraftMemory', ($event.target as HTMLInputElement).value)"
+                @keydown.enter.prevent="emit('addMemory')"
+              />
+              <button type="button" :disabled="!draftMemory.trim()" @click="emit('addMemory')">
+                <Plus :size="15" />
+                <span>添加</span>
+              </button>
+            </div>
+            <div v-if="memories.length" class="memory-list">
+              <div v-for="memory in memories" :key="memory.id" class="memory-item">
+                <span>{{ memory.content }}</span>
+                <button type="button" aria-label="删除记忆" @click="emit('removeMemory', memory.id)">
+                  <Close :size="14" />
+                </button>
+              </div>
+            </div>
+            <p v-else class="memory-empty">暂无记忆</p>
+          </div>
+        </section>
       </div>
       <footer>
         <button class="cancel-settings" type="button" @click="emit('close')">取消</button>
@@ -79,11 +117,14 @@
 <script setup lang="ts">
 import { Close, Moon, Plus, Sunny } from '@element-plus/icons-vue'
 
-import type { ModelSettings } from '@/types/ui'
+import type { MemoryItem, ModelSettings } from '@/types/ui'
 
 defineProps<{
   avatarImage: string
   avatarText: string
+  customInstructions: string
+  draftMemory: string
+  memories: MemoryItem[]
   modelSettings: ModelSettings
   open: boolean
   profileName: string
@@ -91,10 +132,14 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
+  addMemory: []
   avatarUpload: [event: Event]
   close: []
+  removeMemory: [memoryId: string]
   save: []
   updateModelSettings: [value: ModelSettings]
+  updateCustomInstructions: [value: string]
+  updateDraftMemory: [value: string]
   updateProfileName: [value: string]
   updateThemeMode: [value: 'light' | 'dark']
 }>()

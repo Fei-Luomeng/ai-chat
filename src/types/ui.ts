@@ -21,6 +21,11 @@ export interface ModelSettings {
   temperature: number
 }
 
+export interface MemoryItem {
+  id: string
+  content: string
+}
+
 export interface PromptTemplate {
   id: string
   label: string

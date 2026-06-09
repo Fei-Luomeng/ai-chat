@@ -10,6 +10,7 @@ interface SendOptions {
   branchOf?: string
   deepThinking: boolean
   maxTokens?: number
+  systemPrompt?: string
   temperature: number
   webSearch: boolean
 }
@@ -21,6 +22,7 @@ interface ProjectManagementOptions {
   closeMobileSidebar: () => void
   createId: () => string
   currentMode: Ref<'chat' | 'project'>
+  archiveChatSession: (sessionId: string) => void
   deleteChatSession: (sessionId: string) => void
   draft: Ref<string>
   getSendOptions: () => SendOptions
@@ -170,6 +172,23 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     options.openActionMenu.value = ''
   }
 
+  const archiveSession = (sessionId: string) => {
+    const projectMatch = findProjectSession(sessionId)
+    if (projectMatch) {
+      projectMatch.session.archivedAt = Date.now()
+      projectMatch.session.deletedAt = undefined
+      projectMatch.session.updatedAt = Date.now()
+      if (options.activeProjectSessionId.value === sessionId) {
+        options.activeProjectSessionId.value = ''
+        options.isProjectHome.value = true
+      }
+    } else {
+      options.archiveChatSession(sessionId)
+    }
+    options.openActionMenu.value = ''
+    ElMessage.success('对话已归档')
+  }
+
   const closeActionDialog = () => {
     actionDialog.value = null
   }
@@ -231,9 +250,9 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     } else if (dialog.type === 'delete-session') {
       const projectMatch = findProjectSession(dialog.sessionId)
       if (projectMatch) {
-        options.projectSessions.value[projectMatch.projectName] = (
-          options.projectSessions.value[projectMatch.projectName] ?? []
-        ).filter((session) => session.id !== dialog.sessionId)
+        projectMatch.session.deletedAt = Date.now()
+        projectMatch.session.archivedAt = undefined
+        projectMatch.session.updatedAt = Date.now()
         if (options.activeProjectSessionId.value === dialog.sessionId) {
           options.activeProjectSessionId.value = ''
           options.isProjectHome.value = true
@@ -248,6 +267,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
 
   return {
     actionDialog,
+    archiveSession,
     actionMenuStyle,
     closeActionDialog,
     confirmActionDialog,

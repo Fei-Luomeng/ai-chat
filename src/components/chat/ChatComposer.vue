@@ -1,5 +1,8 @@
 <template>
-  <div :class="variant === 'project' ? 'project-hero-composer' : 'composer'">
+  <div
+    v-bind="$attrs"
+    :class="variant === 'project' ? 'project-hero-composer' : 'composer'"
+  >
     <el-input
       :model-value="draft"
       type="textarea"
@@ -40,6 +43,19 @@
         <Search :size="16" />
         <span>联网搜索</span>
       </button>
+      <button
+        v-if="voiceInputSupported"
+        type="button"
+        data-tool="voice-input"
+        :aria-label="isListening ? '停止语音输入' : '开始语音输入'"
+        :aria-pressed="isListening"
+        :class="{ active: isListening, listening: isListening }"
+        @click="emit('toggleVoiceInput')"
+      >
+        <Microphone :size="16" />
+        <span>{{ isListening ? '正在聆听' : '语音输入' }}</span>
+        <i v-if="isListening" class="voice-pulse" />
+      </button>
     </div>
     <button
       v-if="variant === 'project' && responding"
@@ -74,7 +90,11 @@
 </template>
 
 <script setup lang="ts">
-import { ChatDotRound, Promotion, Search, Setting } from '@element-plus/icons-vue'
+import { ChatDotRound, Microphone, Promotion, Search, Setting } from '@element-plus/icons-vue'
+
+defineOptions({
+  inheritAttrs: false,
+})
 
 withDefaults(
   defineProps<{
@@ -85,6 +105,8 @@ withDefaults(
     placeholder: string
     responding: boolean
     variant?: 'default' | 'project'
+    isListening: boolean
+    voiceInputSupported: boolean
     webSearch: boolean
   }>(),
   {
@@ -98,6 +120,7 @@ const emit = defineEmits<{
   stop: []
   toggleAgentMode: []
   toggleDeepThinking: []
+  toggleVoiceInput: []
   toggleWebSearch: []
   updateDraft: [value: string]
 }>()

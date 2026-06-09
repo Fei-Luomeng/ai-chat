@@ -3,7 +3,7 @@
     <ChatSidebar
       :action-menu-style="actionMenuStyle"
       :active-project="activeProject"
-      :active-session-id="chatStore.activeSessionId"
+      :active-session-id="isProjectMode ? '' : activeSession?.id ?? ''"
       :avatar-image="avatarImage"
       :favorite-results="favoriteResults"
       :get-favorite-preview="getExportMessagePreview"
@@ -18,6 +18,7 @@
       :recent-open="isRecentOpen"
       :saved-avatar-display="savedAvatarDisplay"
       :sessions="sidebarSessions"
+      @archive-session="archiveSession"
       @close="isSidebarCollapsed = true"
       @create-project="openCreateProjectDialog"
       @delete-project="deleteProject"
@@ -25,6 +26,7 @@
       @manage-favorites="openFavoritesManager"
       @new-chat="createSession"
       @open-search="openSearch"
+      @open-conversation-manager="openConversationManager"
       @open-settings="openSettings"
       @rename-project="renameProject"
       @rename-session="renameSession"
@@ -71,22 +73,26 @@
         :draft="draft"
         :format-time="formatTime"
         :get-preview="getResultPreview"
+        :is-listening="isListening"
         :open-action-menu="openActionMenu"
         :project-name="activeProject"
         :responding="isResponding"
         :sessions="activeProjectSessions"
         :templates="promptTemplates"
+        :voice-input-supported="voiceInputSupported"
         :web-search="isWebSearch"
+        @archive-session="archiveSession"
         @apply-template="applyPromptTemplate"
         @delete-session="deleteSession"
         @manage-templates="openTemplateManager"
         @rename-session="renameSession"
         @select-session="switchProjectSession"
-        @send="sendProjectMessage"
+        @send="sendProjectMessageWithVoiceStop"
         @stop="stopResponding"
         @toggle-action-menu="toggleActionMenu"
         @toggle-agent-mode="toggleAgentMode"
         @toggle-deep-thinking="toggleDeepThinking"
+        @toggle-voice-input="toggleVoiceInput"
         @toggle-pinned="toggleProjectSessionPinned"
         @toggle-web-search="toggleWebSearch"
         @update-description="projectDescriptions[activeProject] = $event"
@@ -101,16 +107,19 @@
         :deep-thinking="isDeepThinking"
         :draft="draft"
         :is-project-mode="isProjectMode"
+        :is-listening="isListening"
         :responding="isResponding"
         :saved-avatar-display="savedAvatarDisplay"
         :templates="promptTemplates"
+        :voice-input-supported="voiceInputSupported"
         :web-search="isWebSearch"
         @apply-template="applyPromptTemplate"
         @manage-templates="openTemplateManager"
-        @send="send"
+        @send="sendWithVoiceStop"
         @stop="stopResponding"
         @toggle-agent-mode="toggleAgentMode"
         @toggle-deep-thinking="toggleDeepThinking"
+        @toggle-voice-input="toggleVoiceInput"
         @toggle-web-search="toggleWebSearch"
         @update-draft="draft = $event"
       />
@@ -126,29 +135,38 @@
           :get-reasoning-label="getReasoningLabel"
           :has-previous-user-message="hasPreviousUserMessage"
           :highlighted-message-id="highlightedMessageId"
+          :hidden-message-count="hiddenMessageCount"
           :hovered-navigator-item="hoveredNavigatorItem"
           :is-reasoning-open="isReasoningOpen"
           :is-responding="isResponding"
           :is-waiting-for-first-token="isWaitingForFirstToken"
-          :messages="visibleMessages"
+          :messages="renderedMessages"
           :navigator-items="messageNavigatorItems"
+          :speech-playback-state="speechPlaybackState"
+          :speech-synthesis-supported="speechSynthesisSupported"
+          :spoken-message-id="spokenMessageId"
           :streaming-assistant-message-content="streamingAssistantMessageContent"
           :streaming-assistant-message-id="streamingAssistantMessageId"
           @branch-from-assistant="branchFromAssistantMessage"
           @cancel-editing="cancelEditingMessage"
           @copy-message="copyMessage"
+          @continue-message="continueAssistantMessage"
           @edit-message="startEditingMessage"
           @hide-navigator-tooltip="hideNavigatorTooltip"
           @jump-to-message="jumpToMessage"
+          @load-earlier="loadEarlierMessages"
           @message-area-click="copyRenderedCode"
           @message-area-ready="messagesRef = $event"
           @message-area-scroll="updateActiveMessageFromScroll"
           @regenerate="regenerateAssistantMessage"
+          @retry-message="regenerateAssistantMessage"
           @select-branch="selectBranch"
           @show-navigator-tooltip="showNavigatorTooltip"
+          @stop-speech="stopSpeaking"
           @submit-edited-message="submitEditedMessage"
           @toggle-favorite="toggleMessageFavorite"
           @toggle-reasoning="toggleReasoning"
+          @toggle-speech="toggleMessageSpeech"
           @update-editing-draft="editingDraft = $event"
         />
 
@@ -164,13 +182,16 @@
             :deep-thinking="isDeepThinking"
             :draft="draft"
             hint
+            :is-listening="isListening"
             placeholder="给 AI Chat 发送消息"
             :responding="isResponding"
+            :voice-input-supported="voiceInputSupported"
             :web-search="isWebSearch"
-            @send="send"
+            @send="sendWithVoiceStop"
             @stop="stopResponding"
             @toggle-agent-mode="toggleAgentMode"
             @toggle-deep-thinking="toggleDeepThinking"
+            @toggle-voice-input="toggleVoiceInput"
             @toggle-web-search="toggleWebSearch"
             @update-draft="draft = $event"
           />
@@ -243,16 +264,35 @@
     <SettingsDialog
       :avatar-image="avatarImage"
       :avatar-text="savedAvatarDisplay"
+      :custom-instructions="draftCustomInstructions"
+      :draft-memory="draftMemory"
+      :memories="draftMemories"
       :model-settings="draftModelSettings"
       :open="isSettingsOpen"
       :profile-name="draftProfileName"
       :theme-mode="draftThemeMode"
       @avatar-upload="handleAvatarUpload"
+      @add-memory="addDraftMemory"
       @close="closeSettings"
+      @remove-memory="removeDraftMemory"
       @save="saveSettings"
+      @update-custom-instructions="draftCustomInstructions = $event"
+      @update-draft-memory="draftMemory = $event"
       @update-model-settings="draftModelSettings = $event"
       @update-profile-name="draftProfileName = $event"
       @update-theme-mode="draftThemeMode = $event"
+    />
+    <ConversationManagerDialog
+      :archived-count="archivedConversations.length"
+      :items="managedConversationItems"
+      :mode="conversationManagerMode"
+      :open="isConversationManagerOpen"
+      :trash-count="trashedConversations.length"
+      @close="closeConversationManager"
+      @remove="removeManagedConversation"
+      @restore="restoreManagedConversation"
+      @trash="trashManagedConversation"
+      @update-mode="conversationManagerMode = $event"
     />
     <ActionDialog
       :dialog="actionDialog"
@@ -274,14 +314,15 @@ import SearchDialogs from '@/components/chat/SearchDialogs.vue'
 import WelcomeView from '@/components/chat/WelcomeView.vue'
 import ActionDialog from '@/components/dialogs/ActionDialog.vue'
 import ContextClearDialog from '@/components/dialogs/ContextClearDialog.vue'
+import ConversationManagerDialog from '@/components/dialogs/ConversationManagerDialog.vue'
 import ExportDialog from '@/components/dialogs/ExportDialog.vue'
 import FavoritesDialog from '@/components/dialogs/FavoritesDialog.vue'
 import SettingsDialog from '@/components/dialogs/SettingsDialog.vue'
 import TemplateManagerDialog from '@/components/dialogs/TemplateManagerDialog.vue'
 import { useChatApp } from '@/composables/useChatApp'
+import { useSpeechFeatures } from '@/composables/useSpeechFeatures'
 
 const {
-  chatStore,
   draft,
   messagesRef,
   editingMessageId,
@@ -294,6 +335,8 @@ const {
   isFavoritesOpen,
   isTemplateManagerOpen,
   isContextClearOpen,
+  isConversationManagerOpen,
+  conversationManagerMode,
   searchText,
   sessionSearchText,
   favoriteSearchText,
@@ -305,6 +348,9 @@ const {
   isProjectHome,
   isPendingNewSession,
   isPendingProjectSession,
+  draftCustomInstructions,
+  draftMemories,
+  draftMemory,
   draftModelSettings,
   isDeepThinking,
   isAgentMode,
@@ -340,16 +386,20 @@ const {
   sessionSearchResults,
   sidebarSessions,
   activeProjectSessions,
+  archivedConversations,
   favoriteResults,
-  visibleMessages,
+  renderedMessages,
+  hiddenMessageCount,
   favoriteScopeOptions,
   filteredFavoriteResults,
   messageNavigatorItems,
+  managedConversationItems,
   exportableMessages,
   selectedExportMessages,
   savedAvatarDisplay,
   updateActiveMessageFromScroll,
   jumpToMessage,
+  loadEarlierMessages,
   copyRenderedCode,
   getReasoningContent,
   getAnswerContent,
@@ -359,8 +409,11 @@ const {
   toggleMessageFavorite,
   switchFromFavorite,
   openFavoritesManager,
+  openConversationManager,
   closeFavoritesManager,
+  closeConversationManager,
   removeFavorite,
+  removeManagedConversation,
   openExportDialog,
   closeExportDialog,
   toggleExportMessage,
@@ -381,6 +434,7 @@ const {
   savePromptTemplate,
   deletePromptTemplate,
   restoreDefaultTemplates,
+  restoreManagedConversation,
   openContextClearDialog,
   closeContextClearDialog,
   clearCurrentContext,
@@ -392,6 +446,7 @@ const {
   branchFromAssistantMessage,
   submitEditedMessage,
   regenerateAssistantMessage,
+  continueAssistantMessage,
   showNavigatorTooltip,
   hideNavigatorTooltip,
   send,
@@ -413,6 +468,9 @@ const {
   renameProject,
   deleteProject,
   renameSession,
+  archiveSession,
+  trashManagedConversation,
+  trashedConversations,
   deleteSession,
   closeActionDialog,
   confirmActionDialog,
@@ -420,6 +478,33 @@ const {
   openSettings,
   saveSettings,
   closeSettings,
+  addDraftMemory,
+  removeDraftMemory,
   formatTime,
 } = useChatApp()
+
+const {
+  isListening,
+  speechPlaybackState,
+  speechSynthesisSupported,
+  spokenMessageId,
+  stopSpeaking,
+  stopVoiceInput,
+  toggleMessageSpeech,
+  toggleVoiceInput,
+  voiceInputSupported,
+} = useSpeechFeatures({
+  draft,
+  getMessageText: getAnswerContent,
+})
+
+const sendWithVoiceStop = () => {
+  stopVoiceInput()
+  send()
+}
+
+const sendProjectMessageWithVoiceStop = () => {
+  stopVoiceInput()
+  sendProjectMessage()
+}
 </script>

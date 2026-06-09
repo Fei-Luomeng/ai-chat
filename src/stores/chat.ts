@@ -18,22 +18,26 @@ export interface ChatMessage {
   id: string
   role: MessageRole
   content: string
+  error?: string
   favorited?: boolean
   reasoningContent?: string
   reasoningEndedAt?: number
   reasoningStartedAt?: number
   sources?: WebSearchSource[]
+  truncated?: boolean
   createdAt: number
 }
 
 export interface ChatSession {
   activeBranchIds?: Record<string, string>
+  archivedAt?: number
   branchDepth?: number
   branchParentSessionId?: string
   branchParentTitle?: string
   branchRootSessionId?: string
   branchSourceMessageId?: string
   contextClearedAt?: number
+  deletedAt?: number
   id: string
   title: string
   messages: ChatMessage[]
@@ -48,11 +52,14 @@ interface SendOptions {
   contextClearedAt?: number
   deepThinking?: boolean
   maxTokens?: number
+  systemPrompt?: string
   temperature?: number
   webSearch?: boolean
 }
 
 interface RequestAssistantOptions extends SendOptions {
+  onError?: (message: string) => void | Promise<void>
+  onFinish?: (truncated: boolean) => void | Promise<void>
   onReasoning?: (token: string) => void | Promise<void>
   onSources?: (sources: WebSearchSource[]) => void | Promise<void>
   onToken?: (token: string) => void | Promise<void>
@@ -68,7 +75,7 @@ const welcomeMessage: ChatMessage = {
 }
 
 const createId = () => crypto.randomUUID()
-const BIGMODEL_API_KEY = 'b236db0425f94a2db8743cf915e12c3f.FE9eFM5sv1BMn5OU'
+const BIGMODEL_API_KEY = ''
 const BIGMODEL_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 const BIGMODEL_MODEL = 'glm-4.7-flash'
 const CONTEXT_MESSAGE_LIMIT = 20
@@ -104,6 +111,7 @@ type AgentToolCall = {
 }
 
 type StreamReply = {
+  finishReason: string
   sources: WebSearchSource[]
   text: string
   toolCalls: AgentToolCall[]
@@ -168,7 +176,7 @@ const normalizeStoredMessages = (messages: ChatMessage[]) =>
   messages.filter(
     (message, index) =>
       !(index === 0 && message.role === 'assistant' && message.content === welcomeMessage.content) &&
-      !(message.role === 'assistant' && !message.content.trim()),
+      !(message.role === 'assistant' && !message.content.trim() && !message.error),
   )
 
 const readStoredSessions = () => {
@@ -423,6 +431,19 @@ const getToolCallsFromData = (data: unknown) => {
       arguments: getRawTextFromContent(call?.function?.arguments),
     }))
     .filter((call) => call.type === 'function' || Boolean(call.name || call.arguments))
+}
+
+const getFinishReasonFromData = (data: unknown) => {
+  if (!data || typeof data !== 'object') return ''
+
+  const response = data as Record<string, any>
+  const choice = response.choices?.[0] ?? response.data?.choices?.[0]
+  return getRawTextFromContent(
+    choice?.finish_reason ??
+      choice?.finishReason ??
+      response.finish_reason ??
+      response.finishReason,
+  )
 }
 
 const appendToolCallChunks = (
@@ -761,6 +782,7 @@ const readStreamResponse = async (
     const text = getAssistantText(data)
     await emitFullTextWithTypewriter(text, onToken, signal)
     return {
+      finishReason: getFinishReasonFromData(data),
       sources: getWebSearchSourcesFromData(data),
       text,
       toolCalls: getToolCallsFromData(data).map((call, index) =>
@@ -785,6 +807,7 @@ const readStreamResponse = async (
   let buffer = ''
   let fullText = ''
   let rawText = ''
+  let finishReason = ''
   const toolCalls: AgentToolCall[] = []
   const sources: WebSearchSource[] = []
 
@@ -813,11 +836,12 @@ const readStreamResponse = async (
           }),
         )
         await typewriter.drain()
-        return { sources, text: fullText, toolCalls } satisfies StreamReply
+        return { finishReason, sources, text: fullText, toolCalls } satisfies StreamReply
       }
 
       try {
         const data = JSON.parse(payload)
+        finishReason = getFinishReasonFromData(data) || finishReason
         appendToolCallChunks(toolCalls, getToolCallsFromData(data))
         appendWebSearchSources(sources, getWebSearchSourcesFromData(data))
 
@@ -849,7 +873,7 @@ const readStreamResponse = async (
     }
 
     await emitFullTextWithTypewriter(fallbackText, onToken, signal)
-    return { sources, text: fallbackText, toolCalls } satisfies StreamReply
+    return { finishReason, sources, text: fallbackText, toolCalls } satisfies StreamReply
   }
 
   appendWebSearchSources(
@@ -861,7 +885,7 @@ const readStreamResponse = async (
     }),
   )
   await typewriter.drain()
-  return { sources, text: fullText, toolCalls } satisfies StreamReply
+  return { finishReason, sources, text: fullText, toolCalls } satisfies StreamReply
 }
 
 export const useChatStore = defineStore('chat', {
@@ -876,7 +900,14 @@ export const useChatStore = defineStore('chat', {
     streamingReasoningStartedAt: 0,
   }),
   getters: {
-    activeSession: (state) => state.sessions.find((session) => session.id === state.activeSessionId) ?? state.sessions[0],
+    activeSession: (state) =>
+      state.sessions.find(
+        (session) =>
+          session.id === state.activeSessionId &&
+          !session.archivedAt &&
+          !session.deletedAt,
+      ) ??
+      state.sessions.find((session) => !session.archivedAt && !session.deletedAt),
   },
   actions: {
     createSession() {
@@ -913,6 +944,38 @@ export const useChatStore = defineStore('chat', {
       if (this.activeSessionId === sessionId) {
         this.activeSessionId = this.sessions[0]?.id ?? ''
       }
+      writeStoredSessions(this.sessions)
+    },
+    archiveSession(sessionId: string) {
+      const session = this.sessions.find((item) => item.id === sessionId)
+      if (!session) return
+      session.archivedAt = Date.now()
+      session.deletedAt = undefined
+      session.updatedAt = Date.now()
+      if (this.activeSessionId === sessionId) {
+        this.activeSessionId =
+          this.sessions.find((item) => !item.archivedAt && !item.deletedAt && item.id !== sessionId)?.id ?? ''
+      }
+      writeStoredSessions(this.sessions)
+    },
+    trashSession(sessionId: string) {
+      const session = this.sessions.find((item) => item.id === sessionId)
+      if (!session) return
+      session.deletedAt = Date.now()
+      session.archivedAt = undefined
+      session.updatedAt = Date.now()
+      if (this.activeSessionId === sessionId) {
+        this.activeSessionId =
+          this.sessions.find((item) => !item.archivedAt && !item.deletedAt && item.id !== sessionId)?.id ?? ''
+      }
+      writeStoredSessions(this.sessions)
+    },
+    restoreSession(sessionId: string) {
+      const session = this.sessions.find((item) => item.id === sessionId)
+      if (!session) return
+      session.archivedAt = undefined
+      session.deletedAt = undefined
+      session.updatedAt = Date.now()
       writeStoredSessions(this.sessions)
     },
     toggleSessionPinned(sessionId: string) {
@@ -986,7 +1049,9 @@ export const useChatStore = defineStore('chat', {
       let assistantMessage: ChatMessage | null = null
       let contentFallbackBuffer = ''
       let hasProviderReasoning = false
+      let responseError = ''
       let responseSources: WebSearchSource[] = []
+      let responseTruncated = false
       const ensureAssistantMessage = () => {
         if (!assistantMessage) {
           assistantMessage = {
@@ -1018,6 +1083,13 @@ export const useChatStore = defineStore('chat', {
         maxTokens: options.maxTokens,
         temperature: options.temperature,
         webSearch: options.webSearch,
+        onError: (message) => {
+          responseError = message
+          ensureAssistantMessage().error = message
+        },
+        onFinish: (truncated) => {
+          responseTruncated = truncated
+        },
         onSources: (sources) => {
           responseSources = sources
           const message = assistantMessage as ChatMessage | null
@@ -1087,6 +1159,7 @@ export const useChatStore = defineStore('chat', {
           session.updatedAt = Date.now()
         },
         signal: responseAbortController.signal,
+        systemPrompt: options.systemPrompt,
       })
       responseAbortController = null
       if (!this.isResponding) return
@@ -1138,10 +1211,12 @@ export const useChatStore = defineStore('chat', {
         }
 
         completedAssistantMessage.content = finalContent
+        completedAssistantMessage.error = responseError || undefined
         completedAssistantMessage.reasoningContent = finalReasoning || undefined
         completedAssistantMessage.reasoningStartedAt = reasoningStartedAt || undefined
         completedAssistantMessage.reasoningEndedAt = reasoningEndedAt || undefined
         completedAssistantMessage.sources = responseSources.length ? responseSources : undefined
+        completedAssistantMessage.truncated = responseTruncated || undefined
       } else if (reply) {
         const fallbackSplit = options.deepThinking ? splitReasoningFromAnswer(reply) : null
         assistantMessage = {
@@ -1154,6 +1229,7 @@ export const useChatStore = defineStore('chat', {
           reasoningEndedAt: fallbackSplit ? Date.now() : undefined,
           reasoningStartedAt: fallbackSplit ? Date.now() : undefined,
           sources: responseSources.length ? responseSources : undefined,
+          truncated: responseTruncated || undefined,
           createdAt: Date.now(),
         }
         session.messages.push(assistantMessage)
@@ -1181,8 +1257,8 @@ export const useChatStore = defineStore('chat', {
     async requestAssistantReply(messages: ChatMessage[], options: RequestAssistantOptions = {}) {
       if (!BIGMODEL_API_KEY) {
         const message = '还没有配置 BigModel API Key。请在 src/stores/chat.ts 顶部的 BIGMODEL_API_KEY 里填入你的 Key。'
-        await emitFullTextWithTypewriter(message, options.onToken, options.signal)
-        return message
+        await options.onError?.(message)
+        return ''
       }
 
       const storedWebSearch = readStoredWebSearchEnabled()
@@ -1256,6 +1332,7 @@ export const useChatStore = defineStore('chat', {
         }
 
         const reply = await readStreamResponse(response, options.onToken, options.onReasoning, options.signal)
+        await options.onFinish?.(['length', 'max_tokens'].includes(reply.finishReason.toLowerCase()))
         if (reply.sources.length) {
           await options.onSources?.(reply.sources)
         }
@@ -1296,6 +1373,7 @@ export const useChatStore = defineStore('chat', {
           }
 
           const finalReply = await readStreamResponse(followUpResponse, options.onToken, options.onReasoning, options.signal)
+          await options.onFinish?.(['length', 'max_tokens'].includes(finalReply.finishReason.toLowerCase()))
           if (finalReply.sources.length) {
             await options.onSources?.(finalReply.sources)
           }
@@ -1305,13 +1383,14 @@ export const useChatStore = defineStore('chat', {
         if (reply.text) return reply.text
 
         console.warn('GLM response without readable content')
-        return '接口返回为空。已在浏览器控制台打印原始返回，请看 Console 里的 “GLM response without readable content”。'
+        await options.onError?.('接口没有返回可读取的内容，请稍后重试')
+        return ''
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return ''
         console.error(error)
         const message = error instanceof Error ? error.message : String(error)
-        await emitFullTextWithTypewriter(message, options.onToken, options.signal)
-        return message
+        await options.onError?.(message)
+        return ''
       }
     },
   },
