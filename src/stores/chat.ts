@@ -2,6 +2,16 @@ import { defineStore } from 'pinia'
 
 export type MessageRole = 'user' | 'assistant'
 
+export interface WebSearchSource {
+  icon?: string
+  publishedAt?: string
+  refer?: string
+  siteName?: string
+  snippet?: string
+  title: string
+  url: string
+}
+
 export interface ChatMessage {
   branchLabel?: string
   branchOf?: string
@@ -12,10 +22,17 @@ export interface ChatMessage {
   reasoningContent?: string
   reasoningEndedAt?: number
   reasoningStartedAt?: number
+  sources?: WebSearchSource[]
   createdAt: number
 }
 
 export interface ChatSession {
+  activeBranchIds?: Record<string, string>
+  branchDepth?: number
+  branchParentSessionId?: string
+  branchParentTitle?: string
+  branchRootSessionId?: string
+  branchSourceMessageId?: string
   contextClearedAt?: number
   id: string
   title: string
@@ -37,6 +54,7 @@ interface SendOptions {
 
 interface RequestAssistantOptions extends SendOptions {
   onReasoning?: (token: string) => void | Promise<void>
+  onSources?: (sources: WebSearchSource[]) => void | Promise<void>
   onToken?: (token: string) => void | Promise<void>
   signal?: AbortSignal
   systemPrompt?: string
@@ -61,7 +79,7 @@ const SYSTEM_PROMPT = '你是 AI Chat，一个简洁、可靠的中文 AI 助手
 const DEEP_THINKING_PROMPT =
   '深度思考模式已开启。请控制思考长度，尽快输出正式回答。如果思考与回答出现在同一字段，再用“最终回答：”分隔。'
 const WEB_SEARCH_PROMPT =
-  '联网搜索已开启。需要实时信息或事实核验时，请基于网络搜索结果回答；如果使用了搜索结果，请在回答末尾用简短列表列出主要来源。'
+  '联网搜索已开启。需要实时信息或事实核验时，请基于网络搜索结果回答，并在对应事实后保留搜索结果的 refer 标识（例如【ref_1】），不要自行编造引用。'
 const AGENT_MODE_PROMPT =
   'Agent 模式已开启。你可以按需调用可用工具获取确定结果。工具返回后，请基于工具结果给出自然、简洁的最终回答，不要暴露内部工具 JSON。'
 export const MISSING_FINAL_ANSWER =
@@ -86,6 +104,7 @@ type AgentToolCall = {
 }
 
 type StreamReply = {
+  sources: WebSearchSource[]
   text: string
   toolCalls: AgentToolCall[]
 }
@@ -272,6 +291,110 @@ const getStreamReasoningText = (data: unknown) => {
   return getRawTextFromContent(delta?.reasoning_content)
 }
 
+const normalizeWebSearchSource = (source: any, index: number): WebSearchSource | null => {
+  const url = getRawTextFromContent(source?.link ?? source?.url).trim()
+  if (!/^https?:\/\//i.test(url)) return null
+
+  const title =
+    getRawTextFromContent(source?.title) ||
+    getRawTextFromContent(source?.name) ||
+    getRawTextFromContent(source?.media) ||
+    url
+
+  return {
+    icon: getRawTextFromContent(source?.icon) || undefined,
+    publishedAt:
+      getRawTextFromContent(source?.publish_date ?? source?.published_at ?? source?.date) || undefined,
+    refer:
+      (typeof source?.refer === 'string' || typeof source?.refer === 'number'
+        ? String(source.refer)
+        : '') || `ref_${index + 1}`,
+    siteName:
+      getRawTextFromContent(source?.media ?? source?.site_name ?? source?.siteName) || undefined,
+    snippet:
+      getRawTextFromContent(source?.content ?? source?.snippet ?? source?.description) || undefined,
+    title,
+    url,
+  }
+}
+
+const getWebSearchSourcesFromData = (data: unknown) => {
+  if (!data || typeof data !== 'object') return []
+
+  const candidates: unknown[] = []
+  const visited = new WeakSet<object>()
+
+  const collect = (value: unknown, key = '', depth = 0) => {
+    if (depth > 12 || value === null || value === undefined) return
+
+    if (typeof value === 'string') {
+      const normalized = value.trim()
+      if (
+        /search|result|argument|output|content/i.test(key) &&
+        (normalized.startsWith('{') || normalized.startsWith('['))
+      ) {
+        try {
+          collect(JSON.parse(normalized), key, depth + 1)
+        } catch {
+          // Tool fields can also contain ordinary text.
+        }
+      }
+      return
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach((item) => collect(item, key, depth + 1))
+      return
+    }
+
+    if (typeof value !== 'object' || visited.has(value)) return
+    visited.add(value)
+
+    const record = value as Record<string, unknown>
+    const rawUrl = record.link ?? record.url ?? record.href
+    const hasUrl = typeof rawUrl === 'string' && /^https?:\/\//i.test(rawUrl.trim())
+    const looksLikeSource =
+      hasUrl &&
+      (
+        /search|result|web|source|reference|citation/i.test(key) ||
+        'refer' in record ||
+        'media' in record ||
+        'publish_date' in record ||
+        'snippet' in record ||
+        'title' in record
+      )
+
+    if (looksLikeSource) {
+      candidates.push(record)
+    }
+
+    Object.entries(record).forEach(([childKey, childValue]) => {
+      collect(childValue, childKey, depth + 1)
+    })
+  }
+
+  collect(data)
+
+  const sources = candidates
+    .map(normalizeWebSearchSource)
+    .filter((source): source is WebSearchSource => Boolean(source))
+
+  return sources.filter(
+    (source, index) => sources.findIndex((item) => item.url === source.url) === index,
+  )
+}
+
+const appendWebSearchSources = (sources: WebSearchSource[], incoming: WebSearchSource[]) => {
+  for (const source of incoming) {
+    const existingIndex = sources.findIndex((item) => item.url === source.url)
+    if (existingIndex >= 0) {
+      sources[existingIndex] = { ...sources[existingIndex], ...source }
+    } else {
+      sources.push(source)
+    }
+  }
+}
+
 const normalizeToolCall = (call: any, fallbackIndex = 0): AgentToolCall => ({
   id: getRawTextFromContent(call?.id) || `tool-call-${fallbackIndex}`,
   type: 'function',
@@ -291,13 +414,15 @@ const getToolCallsFromData = (data: unknown) => {
 
   if (!Array.isArray(toolCalls)) return []
 
-  return toolCalls.map((call, index) => ({
-    index: typeof call?.index === 'number' ? call.index : index,
-    id: getRawTextFromContent(call?.id),
-    type: getRawTextFromContent(call?.type),
-    name: getRawTextFromContent(call?.function?.name),
-    arguments: getRawTextFromContent(call?.function?.arguments),
-  }))
+  return toolCalls
+    .map((call, index) => ({
+      index: typeof call?.index === 'number' ? call.index : index,
+      id: getRawTextFromContent(call?.id),
+      type: getRawTextFromContent(call?.type),
+      name: getRawTextFromContent(call?.function?.name),
+      arguments: getRawTextFromContent(call?.function?.arguments),
+    }))
+    .filter((call) => call.type === 'function' || Boolean(call.name || call.arguments))
 }
 
 const appendToolCallChunks = (
@@ -636,6 +761,7 @@ const readStreamResponse = async (
     const text = getAssistantText(data)
     await emitFullTextWithTypewriter(text, onToken, signal)
     return {
+      sources: getWebSearchSourcesFromData(data),
       text,
       toolCalls: getToolCallsFromData(data).map((call, index) =>
         normalizeToolCall(
@@ -660,6 +786,7 @@ const readStreamResponse = async (
   let fullText = ''
   let rawText = ''
   const toolCalls: AgentToolCall[] = []
+  const sources: WebSearchSource[] = []
 
   while (true) {
     const { done, value } = await reader.read()
@@ -677,13 +804,22 @@ const readStreamResponse = async (
 
       const payload = trimmed.slice(5).trim()
       if (payload === '[DONE]') {
+        appendWebSearchSources(
+          sources,
+          getWebSearchSourcesFromData({
+            toolCalls: toolCalls.map((call) => ({
+              arguments: call.function.arguments,
+            })),
+          }),
+        )
         await typewriter.drain()
-        return { text: fullText, toolCalls } satisfies StreamReply
+        return { sources, text: fullText, toolCalls } satisfies StreamReply
       }
 
       try {
         const data = JSON.parse(payload)
         appendToolCallChunks(toolCalls, getToolCallsFromData(data))
+        appendWebSearchSources(sources, getWebSearchSourcesFromData(data))
 
         const reasoning = getStreamReasoningText(data)
         if (reasoning) {
@@ -707,16 +843,25 @@ const readStreamResponse = async (
     try {
       const data = JSON.parse(rawText)
       fallbackText = getAssistantText(data)
+      appendWebSearchSources(sources, getWebSearchSourcesFromData(data))
     } catch {
       fallbackText = rawText.trim()
     }
 
     await emitFullTextWithTypewriter(fallbackText, onToken, signal)
-    return { text: fallbackText, toolCalls } satisfies StreamReply
+    return { sources, text: fallbackText, toolCalls } satisfies StreamReply
   }
 
+  appendWebSearchSources(
+    sources,
+    getWebSearchSourcesFromData({
+      toolCalls: toolCalls.map((call) => ({
+        arguments: call.function.arguments,
+      })),
+    }),
+  )
   await typewriter.drain()
-  return { text: fullText, toolCalls } satisfies StreamReply
+  return { sources, text: fullText, toolCalls } satisfies StreamReply
 }
 
 export const useChatStore = defineStore('chat', {
@@ -821,6 +966,12 @@ export const useChatStore = defineStore('chat', {
         createdAt: now,
       }
       session.messages.push(userMessage)
+      if (options.branchOf) {
+        session.activeBranchIds = {
+          ...(session.activeBranchIds ?? {}),
+          [options.branchOf]: userMessage.id,
+        }
+      }
 
       if (session.messages.length === 1) {
         session.title = summarizeTitle(trimmedContent)
@@ -835,6 +986,7 @@ export const useChatStore = defineStore('chat', {
       let assistantMessage: ChatMessage | null = null
       let contentFallbackBuffer = ''
       let hasProviderReasoning = false
+      let responseSources: WebSearchSource[] = []
       const ensureAssistantMessage = () => {
         if (!assistantMessage) {
           assistantMessage = {
@@ -866,6 +1018,11 @@ export const useChatStore = defineStore('chat', {
         maxTokens: options.maxTokens,
         temperature: options.temperature,
         webSearch: options.webSearch,
+        onSources: (sources) => {
+          responseSources = sources
+          const message = assistantMessage as ChatMessage | null
+          if (message) message.sources = sources
+        },
         onReasoning: (token) => {
           hasProviderReasoning = true
           const message = ensureAssistantMessage()
@@ -934,7 +1091,8 @@ export const useChatStore = defineStore('chat', {
       responseAbortController = null
       if (!this.isResponding) return
 
-      if (assistantMessage) {
+      const completedAssistantMessage = assistantMessage as ChatMessage | null
+      if (completedAssistantMessage) {
         if (this.streamingReasoningContent && !this.streamingReasoningEndedAt) {
           this.streamingReasoningEndedAt = Date.now()
         }
@@ -957,7 +1115,7 @@ export const useChatStore = defineStore('chat', {
         } else if (fallbackSplit) {
           finalContent = fallbackSplit.answer
           finalReasoning = fallbackSplit.reasoning
-          reasoningStartedAt = assistantMessage.createdAt
+          reasoningStartedAt = completedAssistantMessage.createdAt
           reasoningEndedAt = Date.now()
         } else if (options.deepThinking && !hasProviderReasoning && contentFallbackBuffer) {
           finalContent = contentFallbackBuffer
@@ -973,25 +1131,29 @@ export const useChatStore = defineStore('chat', {
         if (reasoningAnswerSplit) {
           finalContent = reasoningAnswerSplit.answer
           finalReasoning = reasoningAnswerSplit.reasoning
-          reasoningStartedAt = reasoningStartedAt || assistantMessage.createdAt
+          reasoningStartedAt = reasoningStartedAt || completedAssistantMessage.createdAt
           reasoningEndedAt = reasoningEndedAt || Date.now()
         } else if (finalReasoning.trim() && !finalContent.trim()) {
           finalContent = MISSING_FINAL_ANSWER
         }
 
-        assistantMessage.content = finalContent
-        assistantMessage.reasoningContent = finalReasoning || undefined
-        assistantMessage.reasoningStartedAt = reasoningStartedAt || undefined
-        assistantMessage.reasoningEndedAt = reasoningEndedAt || undefined
+        completedAssistantMessage.content = finalContent
+        completedAssistantMessage.reasoningContent = finalReasoning || undefined
+        completedAssistantMessage.reasoningStartedAt = reasoningStartedAt || undefined
+        completedAssistantMessage.reasoningEndedAt = reasoningEndedAt || undefined
+        completedAssistantMessage.sources = responseSources.length ? responseSources : undefined
       } else if (reply) {
         const fallbackSplit = options.deepThinking ? splitReasoningFromAnswer(reply) : null
         assistantMessage = {
+          branchLabel: options.branchLabel,
+          branchOf: options.branchOf,
           id: createId(),
           role: 'assistant',
           content: fallbackSplit?.answer ?? reply,
           reasoningContent: fallbackSplit?.reasoning,
           reasoningEndedAt: fallbackSplit ? Date.now() : undefined,
           reasoningStartedAt: fallbackSplit ? Date.now() : undefined,
+          sources: responseSources.length ? responseSources : undefined,
           createdAt: Date.now(),
         }
         session.messages.push(assistantMessage)
@@ -1094,6 +1256,9 @@ export const useChatStore = defineStore('chat', {
         }
 
         const reply = await readStreamResponse(response, options.onToken, options.onReasoning, options.signal)
+        if (reply.sources.length) {
+          await options.onSources?.(reply.sources)
+        }
         if (agentModeEnabled && reply.toolCalls.length) {
           const toolMessages = reply.toolCalls.map((toolCall) => ({
             role: 'tool',
@@ -1131,6 +1296,9 @@ export const useChatStore = defineStore('chat', {
           }
 
           const finalReply = await readStreamResponse(followUpResponse, options.onToken, options.onReasoning, options.signal)
+          if (finalReply.sources.length) {
+            await options.onSources?.(finalReply.sources)
+          }
           if (finalReply.text) return finalReply.text
         }
 

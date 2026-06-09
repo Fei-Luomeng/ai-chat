@@ -1,0 +1,128 @@
+<template>
+  <div class="project-home">
+    <div class="project-home-inner">
+      <div class="project-title-row">
+        <FolderOpened :size="34" />
+        <h1>{{ projectName }}</h1>
+      </div>
+      <textarea
+        :value="description"
+        class="project-description"
+        placeholder="添加项目说明，让这个项目里的对话有更清晰的背景。"
+        @input="emit('updateDescription', ($event.target as HTMLTextAreaElement).value)"
+      />
+      <PromptTemplateBar
+        id-prefix="project"
+        :templates="templates"
+        @apply="emit('applyTemplate', $event)"
+        @manage="emit('manageTemplates')"
+      />
+      <ChatComposer
+        :agent-mode="agentMode"
+        :deep-thinking="deepThinking"
+        :draft="draft"
+        :placeholder="`${projectName}中的新聊天`"
+        :responding="responding"
+        variant="project"
+        :web-search="webSearch"
+        @send="emit('send')"
+        @stop="emit('stop')"
+        @toggle-agent-mode="emit('toggleAgentMode')"
+        @toggle-deep-thinking="emit('toggleDeepThinking')"
+        @toggle-web-search="emit('toggleWebSearch')"
+        @update-draft="emit('updateDraft', $event)"
+      />
+      <div class="project-tabs">
+        <button class="active" type="button">聊天</button>
+      </div>
+      <div class="project-chat-list">
+        <article
+          v-for="session in sessions"
+          :key="`home-${session.id}`"
+          class="project-chat-row"
+          @click="emit('selectSession', session.id)"
+        >
+          <div>
+            <h3>
+              <Connection v-if="session.branchParentSessionId" :size="16" />
+              {{ session.title }}
+              <small v-if="session.pinned" class="pin-mark project-pin">置顶</small>
+            </h3>
+            <small v-if="session.branchParentSessionId" class="project-branch-label">新聊天中的分支</small>
+            <p>{{ getPreview(session) }}</p>
+          </div>
+          <time>{{ formatTime(session.updatedAt) }}</time>
+          <button
+            class="home-row-action"
+            type="button"
+            aria-label="对话操作"
+            @click.stop="emit('toggleActionMenu', `home-session-${session.id}`, $event)"
+          >
+            <MoreFilled :size="17" />
+          </button>
+          <div
+            v-if="openActionMenu === `home-session-${session.id}`"
+            class="action-menu home-menu"
+            :style="actionMenuStyle"
+          >
+            <button type="button" @click.stop="emit('togglePinned', session)">
+              <ChatDotRound :size="16" />
+              <span>{{ session.pinned ? '取消置顶' : '置顶对话' }}</span>
+            </button>
+            <button type="button" @click.stop="emit('renameSession', session)">
+              <EditPen :size="16" />
+              <span>重命名对话</span>
+            </button>
+            <button type="button" class="danger" @click.stop="emit('deleteSession', session.id)">
+              <Delete :size="16" />
+              <span>删除对话</span>
+            </button>
+          </div>
+        </article>
+        <p v-if="sessions.length === 0" class="project-empty">还没有项目对话。先在上方输入第一条消息。</p>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ChatDotRound, Connection, Delete, EditPen, FolderOpened, MoreFilled } from '@element-plus/icons-vue'
+
+import ChatComposer from '@/components/chat/ChatComposer.vue'
+import PromptTemplateBar from '@/components/chat/PromptTemplateBar.vue'
+import type { ChatSession } from '@/stores/chat'
+import type { PromptTemplate } from '@/types/ui'
+
+defineProps<{
+  actionMenuStyle: Record<string, string>
+  agentMode: boolean
+  description: string
+  draft: string
+  deepThinking: boolean
+  openActionMenu: string
+  projectName: string
+  responding: boolean
+  sessions: ChatSession[]
+  templates: PromptTemplate[]
+  webSearch: boolean
+  getPreview: (session: ChatSession) => string
+  formatTime: (timestamp: number) => string
+}>()
+
+const emit = defineEmits<{
+  applyTemplate: [template: PromptTemplate]
+  deleteSession: [sessionId: string]
+  manageTemplates: []
+  renameSession: [session: ChatSession]
+  selectSession: [sessionId: string]
+  send: []
+  stop: []
+  toggleActionMenu: [menuId: string, event: MouseEvent]
+  toggleAgentMode: []
+  toggleDeepThinking: []
+  togglePinned: [session: ChatSession]
+  toggleWebSearch: []
+  updateDescription: [value: string]
+  updateDraft: [value: string]
+}>()
+</script>
