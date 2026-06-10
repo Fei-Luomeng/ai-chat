@@ -24,6 +24,7 @@ const formatTime = (timestamp: number) =>
   new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(timestamp)
 
 const getMessageBranchLabel = (message: ChatMessage, index: number, messages: ChatMessage[]) => {
+  // 助手消息沿用上一条用户消息的分支标签，导出时保持一轮问答一致。
   if (message.branchLabel) return message.branchLabel
   const previousMessage = messages[index - 1]
   return message.role === 'assistant' && previousMessage?.role === 'user'
@@ -32,6 +33,7 @@ const getMessageBranchLabel = (message: ChatMessage, index: number, messages: Ch
 }
 
 const getSafeFileName = (value: string) =>
+  // 替换主流文件系统不允许的字符，并限制文件名长度。
   (value || 'AI Chat 对话')
     .replace(/[\\/:*?"<>|]/g, '-')
     .replace(/\s+/g, ' ')
@@ -39,6 +41,7 @@ const getSafeFileName = (value: string) =>
     .slice(0, 48) || 'AI Chat 对话'
 
 export const useConversationTransfer = (options: ConversationTransferOptions) => {
+  // 导出选择只属于弹窗临时状态，不需要写入 localStorage。
   const isExportOpen = ref(false)
   const exportMode = ref<'all' | 'selected'>('all')
   const selectedExportMessageIds = ref<string[]>([])
@@ -53,6 +56,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
       ElMessage.warning('当前没有可导出的对话')
       return
     }
+    // 每次打开默认全选，切到“选择消息”后可直接取消不需要的条目。
     exportMode.value = 'all'
     selectedExportMessageIds.value = session.messages.map((message) => message.id)
     isExportOpen.value = true
@@ -86,6 +90,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
       dateStyle: 'medium',
       timeStyle: 'short',
     }).format(Date.now())
+    // 使用可读 Markdown 协议，既能人工查看，也能被本应用重新导入。
     const lines = [
       `# ${session.title}`,
       '',
@@ -103,6 +108,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
         ]
       }),
     ]
+    // Object URL 只在本次下载期间存在，触发后立即释放。
     const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -115,6 +121,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
   }
 
   const parseImportedMarkdown = (content: string) => {
+    // 导入器只承诺解析本应用导出的标题结构，避免猜测任意 Markdown 的角色边界。
     const lines = content.replace(/\r\n/g, '\n').split('\n')
     const title = lines.find((line) => line.startsWith('# '))?.replace(/^#\s+/, '').trim() || '导入的对话'
     const messages: ChatMessage[] = []
@@ -123,6 +130,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
     let currentContent: string[] = []
 
     const flushMessage = () => {
+      // 遇到下一条角色标题时，把之前积累的正文提交为一条消息。
       if (!currentRole) return
       const messageContent = currentContent.join('\n').trim()
       if (!messageContent) return
@@ -136,6 +144,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
     }
 
     lines.forEach((line) => {
+      // 角色标题是导入协议边界，正文中的普通二级标题不会匹配该格式。
       const headingMatch = line.match(/^##\s+(你|AI Chat)(?:\s+·\s*(分支\s+\d+))?(?:\s+·.*)?$/)
       if (headingMatch) {
         flushMessage()
@@ -153,6 +162,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
   const importMarkdownSession = async (event: Event) => {
     const input = event.target as HTMLInputElement
     const file = input.files?.[0]
+    // 先清空 input，用户连续选择同一个文件时仍会触发 change。
     input.value = ''
     if (!file) return
     if (!file.name.toLowerCase().endsWith('.md')) {
@@ -172,6 +182,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
       messages: parsed.messages,
       updatedAt: Date.now(),
     }
+    // 导入始终创建普通会话，并退出可能残留的项目导航状态。
     options.stopResponding()
     options.chatSessions.unshift(session)
     options.switchSession(session.id)

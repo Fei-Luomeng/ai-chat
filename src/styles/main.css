@@ -1,3 +1,5 @@
+/* ===== Global foundation ===== */
+/* 全局只定义排版、盒模型和页面最小尺寸，具体颜色由应用外壳接管。 */
 :root {
   color: #0d0d0d;
   background: #ffffff;
@@ -32,6 +34,8 @@ button {
   min-height: 100vh;
 }
 
+/* ===== Application shell ===== */
+/* 桌面端使用两列网格；收起侧栏时第一列平滑压缩为 0。 */
 .chat-shell {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
@@ -72,6 +76,7 @@ button {
 }
 
 .sidebar-backdrop {
+  /* 仅移动端抽屉展开时出现，层级低于侧栏、高于主内容。 */
   position: fixed;
   z-index: 70;
   inset: 0;
@@ -89,6 +94,7 @@ button {
   flex: 0 0 auto;
 }
 
+/* ===== Sidebar header and primary navigation ===== */
 .sidebar-top {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 34px;
@@ -173,6 +179,7 @@ button {
   background: transparent;
 }
 
+/* 中部区域允许项目、会话和收藏分别控制自己的滚动或折叠。 */
 .sidebar-scroll {
   flex: 1;
   min-height: 0;
@@ -204,6 +211,7 @@ button {
 }
 
 .project-list {
+  /* 通过 max-height 动画折叠，避免 display:none 无法过渡。 */
   display: grid;
   gap: 2px;
   max-height: 360px;
@@ -236,6 +244,7 @@ button {
   overflow-y: auto;
 }
 
+/* 收藏摘要限制单行，完整内容在收藏管理弹窗中查看。 */
 .favorite-section-header {
   display: flex;
   align-items: center;
@@ -314,6 +323,7 @@ button {
 }
 
 .folder-plus {
+  /* 文件夹和加号图标叠放，避免额外图片资源。 */
   position: relative;
   display: grid;
   width: 22px;
@@ -352,6 +362,7 @@ button {
   padding-bottom: 5px;
 }
 
+/* 分支会话额外显示来源说明，因此允许更高的行高。 */
 .session-item.branch {
   min-height: 48px;
   align-items: flex-start;
@@ -387,6 +398,7 @@ button {
 }
 
 .nav-row-wrap {
+  /* 包裹层为右侧操作按钮提供绝对定位参照。 */
   position: relative;
   display: block;
 }
@@ -428,6 +440,7 @@ button {
   transform: scale(1.04);
 }
 
+/* 菜单使用 fixed，坐标由触发按钮的 getBoundingClientRect 计算。 */
 .action-menu {
   position: fixed;
   z-index: 60;
@@ -516,6 +529,7 @@ button {
 }
 
 .session-item.active {
+  /* 绿色左边线是普通会话的唯一当前选中标识。 */
   color: #ffffff;
   background: #333333;
   box-shadow: inset 3px 0 #10a37f;
@@ -551,6 +565,7 @@ button {
   vertical-align: middle;
 }
 
+/* ===== Sidebar footer and profile ===== */
 .sidebar-footer {
   display: grid;
   gap: 8px;
@@ -637,6 +652,8 @@ button {
   font-size: 11px;
 }
 
+/* ===== Conversation frame and header ===== */
+/* 三行布局依次是顶栏、可滚动主视图和底部输入器。 */
 .conversation {
   position: relative;
   z-index: 1;
@@ -673,6 +690,7 @@ button {
   background: #f4f4f4;
 }
 
+/* 标题区域必须允许收缩，否则长项目名会挤掉右侧操作按钮。 */
 .model-button {
   display: flex;
   min-width: 0;
@@ -741,9 +759,11 @@ button {
 }
 
 .hidden-file-input {
+  /* 导入按钮通过 ref 触发该原生文件输入。 */
   display: none;
 }
 
+/* ===== Message viewport and right-side navigator ===== */
 .messages {
   min-height: 0;
   padding: 22px 24px 34px;
@@ -751,6 +771,7 @@ button {
 }
 
 .message-navigator {
+  /* 默认只露出短刻度，悬浮或键盘聚焦后展开完整问题标题。 */
   position: absolute;
   top: 150px;
   right: 18px;
@@ -844,6 +865,7 @@ button {
 }
 
 .message-nav-tooltip {
+  /* 折叠状态下用固定浮层显示完整标题，避免被消息区裁切。 */
   position: fixed;
   z-index: 50;
   max-width: min(520px, 42vw);
@@ -859,6 +881,7 @@ button {
 }
 
 .message-row {
+  /* 助手消息头像在左；用户消息通过后续覆盖规则镜像排列。 */
   display: grid;
   grid-template-columns: 36px minmax(0, 720px);
   gap: 14px;
@@ -891,6 +914,7 @@ button {
 }
 
 .message-row.search-highlight {
+  /* 搜索跳转后的短暂定位反馈。 */
   background: rgba(16, 163, 127, 0.1);
   box-shadow: 0 0 0 10px rgba(16, 163, 127, 0.1);
 }
@@ -917,6 +941,7 @@ button {
   border-radius: 18px;
 }
 
+/* ===== Message metadata, branches and actions ===== */
 .avatar {
   display: grid;
   width: 36px;
@@ -960,6 +985,7 @@ button {
 }
 
 .branch-switcher {
+  /* 分支计数使用等宽数字，切换时宽度不会跳动。 */
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -1002,6 +1028,8 @@ button {
   margin-top: 8px;
 }
 
+/* ===== Inline citations and source cards ===== */
+/* 行内引用固定为圆形编号，编号顺序与下方来源卡片一致。 */
 .markdown-body .citation-link {
   display: inline-grid;
   width: 19px;
@@ -1029,6 +1057,7 @@ button {
 }
 
 .markdown-body .citation-missing {
+  /* 接口只返回编号但没有 URL 时保留不可跳转的灰色引用。 */
   color: #666666;
   background: #f1f1f1;
   border-color: #d8d8d8;
@@ -1049,6 +1078,7 @@ button {
 }
 
 .citation-preview {
+  /* 悬浮预览不接收鼠标事件，避免离开编号时产生闪烁。 */
   position: fixed;
   z-index: 80;
   display: grid;
@@ -1147,6 +1177,7 @@ button {
 }
 
 .source-card-list {
+  /* 桌面双列，移动端在断点中降为单列。 */
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -1176,6 +1207,7 @@ button {
 }
 
 .source-card.source-card-highlight {
+  /* 点击正文引用后，目标卡片临时使用该状态类。 */
   background: #eef4ff;
   border-color: #5f87e8;
   box-shadow: 0 0 0 3px rgb(37 99 235 / 13%);
@@ -1187,6 +1219,7 @@ button {
 }
 
 .source-number {
+  /* 卡片编号覆盖在网站图标左上角，建立与正文引用的对应关系。 */
   position: absolute;
   top: 6px;
   left: 6px;
@@ -1240,6 +1273,7 @@ button {
 }
 
 .source-card-copy strong {
+  /* 标题最多两行，避免单个来源拉高整组卡片。 */
   display: -webkit-box;
   color: #252525;
   font-size: 13px;
@@ -1294,6 +1328,8 @@ button {
   border-color: #c7dcff;
 }
 
+/* ===== Recoverable generation states ===== */
+/* 网络错误、API 错误和长度截断都保留在消息下方，允许原地恢复。 */
 .generation-error {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr) auto;
@@ -1365,6 +1401,7 @@ button {
   border-color: #c7d7ff;
 }
 
+/* ===== Message editing and reasoning ===== */
 .message-editor {
   display: grid;
   gap: 10px;
@@ -1417,6 +1454,7 @@ button {
 }
 
 .reasoning-panel {
+  /* 思考区弱化颜色，与正式回答形成视觉层级。 */
   display: grid;
   gap: 12px;
   margin: 4px 0 18px;
@@ -1455,6 +1493,7 @@ button {
 }
 
 .reasoning-content::before {
+  /* 左侧细线帮助辨认较长的思考内容边界。 */
   position: absolute;
   top: 2px;
   bottom: 2px;
@@ -1493,6 +1532,7 @@ button {
 }
 
 .streaming-markdown {
+  /* 正文与光标并排，避免 cursor 参与 Markdown 网格间距。 */
   display: flex;
   align-items: flex-end;
   gap: 2px;
@@ -1513,6 +1553,8 @@ button {
   animation: cursorBlink 1s steps(2, start) infinite;
 }
 
+/* ===== Rendered Markdown ===== */
+/* Markdown 使用网格 gap 统一块级元素间距，减少流式生成时的 margin 抖动。 */
 .markdown-body {
   display: grid;
   gap: 10px;
@@ -1576,6 +1618,7 @@ button {
 }
 
 .markdown-body table {
+  /* 表格保持内容宽度，较窄视口由外层消息区域负责换行。 */
   width: 100%;
   overflow: hidden;
   border-collapse: collapse;
@@ -1605,6 +1648,7 @@ button {
 }
 
 .code-card {
+  /* 代码块自带复制按钮，因此需要相对定位和右侧预留空间。 */
   position: relative;
   overflow: hidden;
   background: #f7f7f8;
@@ -1664,6 +1708,7 @@ button {
 }
 
 .code-copy span::after {
+  /* 两个重叠矩形绘制复制图标，无需额外 SVG。 */
   position: absolute;
   top: 4px;
   right: 4px;
@@ -1677,6 +1722,7 @@ button {
   padding: 24px;
 }
 
+/* ===== Empty conversation and project home ===== */
 .welcome-card {
   display: grid;
   width: min(100%, 760px);
@@ -1710,6 +1756,7 @@ button {
 }
 
 .project-home {
+  /* 项目首页自己滚动，不与底部普通会话输入器共享滚动容器。 */
   min-height: 0;
   overflow-y: auto;
   padding: 54px 24px 40px;
@@ -1740,6 +1787,7 @@ button {
 }
 
 .project-description {
+  /* 项目说明由外层注入系统提示词，因此在首页提供显眼编辑入口。 */
   width: min(100%, 760px);
   min-height: 54px;
   margin: 0 0 32px;
@@ -1759,6 +1807,7 @@ button {
 }
 
 .project-hero-composer {
+  /* 项目首条消息输入器采用两行网格：文本占满首行，工具和发送位于次行。 */
   display: grid;
   grid-template-columns: minmax(0, 1fr) 52px;
   grid-template-rows: auto auto;
@@ -1844,6 +1893,7 @@ button {
 }
 
 .project-chat-row {
+  /* 标题摘要、时间、菜单三列；摘要列允许收缩并省略。 */
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -1935,6 +1985,7 @@ button {
 }
 
 .prompt-templates {
+  /* 模板数量不固定，使用换行布局适配窄内容区。 */
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1974,6 +2025,7 @@ button {
 }
 
 .typing {
+  /* 首 token 前的等待反馈，与真实助手消息分离。 */
   display: flex;
   gap: 6px;
   align-items: center;
@@ -2002,6 +2054,7 @@ button {
   padding: 0 24px 18px;
 }
 
+/* ===== Persistent conversation composer ===== */
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 40px;
@@ -2054,6 +2107,7 @@ button {
 }
 
 .composer-tools {
+  /* 工具按钮允许换行，避免移动端挤压发送按钮。 */
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -2103,6 +2157,7 @@ button {
 }
 
 .voice-pulse {
+  /* 语音识别期间仅做状态反馈，不参与按钮尺寸计算。 */
   position: absolute;
   right: 12px;
   width: 8px;
@@ -2120,7 +2175,9 @@ button {
   font-size: 12px;
 }
 
+/* ===== Search dialogs ===== */
 .search-overlay {
+  /* 搜索靠近页面上方，视觉上更接近命令面板。 */
   position: fixed;
   inset: 0;
   z-index: 20;
@@ -2214,6 +2271,7 @@ button {
 }
 
 .search-result::after {
+  /* 高光层只在 hover/focus 时横向扫过，不阻挡按钮点击。 */
   position: absolute;
   inset: 0;
   content: "";
@@ -2235,6 +2293,7 @@ button {
 }
 
 .spark {
+  /* 搜索结果前的旋转标记由 CSS 绘制。 */
   display: grid;
   width: 14px;
   height: 14px;
@@ -2291,6 +2350,7 @@ mark {
   text-align: center;
 }
 
+/* ===== Shared overlays and confirmation dialog ===== */
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -2304,6 +2364,7 @@ mark {
 }
 
 .confirm-overlay {
+  /* 确认弹窗优先级高于搜索和设置，避免危险操作被其他层遮挡。 */
   position: fixed;
   inset: 0;
   z-index: 90;
@@ -2355,6 +2416,7 @@ mark {
 }
 
 .favorites-dialog {
+  /* 三行网格让工具栏固定、结果列表独立滚动。 */
   width: min(680px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 48px));
   display: grid;
@@ -2511,6 +2573,7 @@ mark {
   text-align: center;
 }
 
+/* ===== Shared confirmation form controls ===== */
 .confirm-body {
   display: grid;
   gap: 10px;
@@ -2568,6 +2631,7 @@ mark {
 }
 
 .confirm-primary.danger {
+  /* 删除项目和彻底删除使用危险色，普通保存仍为黑色主按钮。 */
   background: #d1242f;
 }
 
@@ -2576,6 +2640,7 @@ mark {
 }
 
 .template-dialog {
+  /* 模板管理在桌面端使用列表/表单双栏布局。 */
   width: min(760px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 48px));
   display: grid;
@@ -2634,6 +2699,7 @@ mark {
 }
 
 .template-list {
+  /* 左栏独立滚动，选择模板不会推动右侧表单位置。 */
   display: grid;
   align-content: start;
   gap: 8px;
@@ -2751,6 +2817,7 @@ mark {
 }
 
 .export-dialog {
+  /* 导出弹窗限制高度，选择大量消息时只滚动消息清单。 */
   width: min(560px, calc(100vw - 32px));
   max-height: min(680px, calc(100vh - 48px));
   display: grid;
@@ -2817,6 +2884,7 @@ mark {
 }
 
 .export-mode {
+  /* 分段控件在“全部”和“选择”之间切换。 */
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -2877,6 +2945,7 @@ mark {
 }
 
 .export-check {
+  /* 自绘选择框与整行按钮共享点击区域。 */
   width: 16px;
   height: 16px;
   margin-top: 2px;
@@ -2917,6 +2986,7 @@ mark {
 }
 
 .settings-dialog {
+  /* 设置头尾固定，中间表单区域独立滚动。 */
   width: min(480px, calc(100vw - 32px));
   max-height: min(760px, calc(100vh - 32px));
   display: grid;
@@ -3011,6 +3081,7 @@ mark {
 }
 
 .upload-button input {
+  /* 上传按钮由 label 代理原生文件输入。 */
   display: none;
 }
 
@@ -3094,6 +3165,7 @@ mark {
 }
 
 .memory-input {
+  /* 输入框可伸缩，添加按钮保持内容宽度。 */
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
@@ -3196,6 +3268,7 @@ mark {
 }
 
 .conversation-manager-dialog {
+  /* 归档和回收站共享相同外壳，仅列表操作随 mode 改变。 */
   width: min(620px, calc(100vw - 32px));
   max-height: min(680px, calc(100vh - 48px));
   display: grid;
@@ -3300,6 +3373,7 @@ mark {
 }
 
 .manager-row-actions {
+  /* 操作按钮不换行，标题列负责收缩。 */
   display: flex;
   gap: 7px;
 }
@@ -3360,6 +3434,8 @@ mark {
   background: #f7f7f8;
 }
 
+/* ===== Dark theme overrides ===== */
+/* 暗色模式只覆盖颜色和边框，布局尺寸与亮色模式保持一致。 */
 .theme-dark .conversation,
 .theme-dark {
   color: #ececec;
@@ -3881,6 +3957,8 @@ mark {
   border-color: #3a3a3a;
 }
 
+/* ===== Motion ===== */
+/* 动画均用于状态反馈，不改变元素最终布局。 */
 @keyframes pulse {
   0%,
   80%,
@@ -3945,7 +4023,9 @@ mark {
   }
 }
 
+/* ===== Mobile drawer and compact layout ===== */
 @media (max-width: 780px) {
+  /* 移动端取消桌面双列，侧栏改为覆盖式抽屉。 */
   .chat-shell,
   .chat-shell.sidebar-collapsed {
     grid-template-columns: 1fr;
@@ -3955,6 +4035,7 @@ mark {
   }
 
   .sidebar {
+    /* 使用 100dvh 适配移动浏览器动态地址栏高度。 */
     position: fixed;
     z-index: 80;
     inset: 0 auto 0 0;
@@ -3974,6 +4055,7 @@ mark {
   }
 
   .sidebar-scroll {
+    /* 抽屉头尾固定，只有中部导航滚动。 */
     display: block;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -4006,6 +4088,7 @@ mark {
   }
 
   .message-navigator {
+    /* 窄屏隐藏右侧轮次导航，避免覆盖消息正文。 */
     display: none;
   }
 
@@ -4015,6 +4098,7 @@ mark {
 
   .message-row,
   .message-row.user {
+    /* 移动端统一头像在左，减少用户消息镜像布局占用。 */
     grid-template-columns: 32px minmax(0, 1fr);
     gap: 10px;
   }
@@ -4048,6 +4132,7 @@ mark {
   }
 
   .template-body {
+    /* 模板管理从双栏切换为上下布局。 */
     grid-template-columns: 1fr;
   }
 

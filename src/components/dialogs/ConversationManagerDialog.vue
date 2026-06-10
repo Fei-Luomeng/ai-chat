@@ -1,4 +1,5 @@
 <template>
+  <!-- 归档和回收站共用列表，通过 mode 切换可用操作。 -->
   <div v-if="open" class="settings-overlay" @click="emit('close')">
     <section class="conversation-manager-dialog" @click.stop>
       <header>
@@ -10,6 +11,7 @@
           <Close :size="18" />
         </button>
       </header>
+      <!-- 数量由父级预先计算，切换 tab 不重新组织原始会话。 -->
       <div class="manager-tabs">
         <button type="button" :class="{ active: mode === 'archived' }" @click="emit('updateMode', 'archived')">
           归档 {{ archivedCount }}
@@ -18,6 +20,7 @@
           回收站 {{ trashCount }}
         </button>
       </div>
+      <!-- 普通会话和项目会话已被拉平成统一 ManagedConversation。 -->
       <div class="conversation-manager-list">
         <article v-for="item in items" :key="`${item.projectName}-${item.session.id}`">
           <div>
@@ -58,12 +61,14 @@ import { Close } from '@element-plus/icons-vue'
 import type { ChatSession } from '@/stores/chat'
 
 export interface ManagedConversation {
+  // 空 projectName 表示普通会话，非空值表示所属项目。
   projectName: string
   session: ChatSession
   timestamp: number
 }
 
 defineProps<{
+  // items 始终只包含当前 mode 对应的数据。
   archivedCount: number
   items: ManagedConversation[]
   mode: 'archived' | 'trash'

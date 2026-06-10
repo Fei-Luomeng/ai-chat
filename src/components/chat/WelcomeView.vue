@@ -1,4 +1,5 @@
 <template>
+  <!-- 空会话欢迎页：没有持久化消息时展示。 -->
   <div class="welcome-center">
     <div class="welcome-card">
       <span class="welcome-avatar" :style="avatarImage ? { backgroundImage: `url(${avatarImage})` } : undefined">
@@ -6,6 +7,7 @@
       </span>
       <p v-if="isProjectMode" class="project-kicker">项目：{{ activeProject }}</p>
       <h1>{{ isProjectMode ? '在这个项目中开始对话' : '有什么可以帮忙的？' }}</h1>
+      <!-- 模板和输入器复用通用组件，避免欢迎页形成另一套发送逻辑。 -->
       <PromptTemplateBar
         id-prefix="fresh"
         :templates="templates"
@@ -39,6 +41,7 @@ import ChatComposer from '@/components/chat/ChatComposer.vue'
 import PromptTemplateBar from '@/components/chat/PromptTemplateBar.vue'
 import type { PromptTemplate } from '@/types/ui'
 
+// 所有状态均来自父级，欢迎页自身不保留草稿或工具开关。
 defineProps<{
   activeProject: string
   agentMode: boolean

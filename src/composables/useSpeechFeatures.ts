@@ -5,6 +5,7 @@ import type { ChatMessage } from '@/stores/chat'
 
 type SpeechPlaybackState = 'idle' | 'paused' | 'speaking'
 
+// SpeechRecognition 尚未稳定进入 TypeScript DOM 类型，并且 Chromium 仍可能只暴露 webkit 前缀。
 interface SpeechRecognitionAlternativeLike {
   transcript: string
 }
@@ -54,6 +55,7 @@ interface UseSpeechFeaturesOptions {
 }
 
 const normalizeSpeechText = (content: string) =>
+  // 朗读前去掉 Markdown 语法和引用编号，避免把星号、链接等符号读出来。
   content
     .replace(/```[\s\S]*?```/g, '代码块。')
     .replace(/`([^`]+)`/g, '$1')
@@ -70,6 +72,7 @@ const normalizeSpeechText = (content: string) =>
     .trim()
 
 export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
+  // 朗读和语音输入是两套独立浏览器 API，可以同时判断支持情况。
   const speechPlaybackState = ref<SpeechPlaybackState>('idle')
   const spokenMessageId = ref('')
   const isListening = ref(false)
@@ -87,10 +90,12 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
   )
 
   let recognition: SpeechRecognitionLike | null = null
+  // 开始识别时记录已有草稿，临时转写始终追加在该基线之后。
   let recognitionBaseDraft = ''
   let activeUtterance: SpeechSynthesisUtterance | null = null
 
   const resetSpeechPlayback = () => {
+    // 浏览器 cancel 不保证触发统一回调，因此主动重置本地状态。
     speechPlaybackState.value = 'idle'
     spokenMessageId.value = ''
     activeUtterance = null
@@ -108,6 +113,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
       return
     }
 
+    // 点击当前消息在暂停/继续之间切换；点击其他消息则开始新的朗读。
     if (spokenMessageId.value === message.id) {
       if (speechPlaybackState.value === 'speaking') {
         window.speechSynthesis.pause()
@@ -130,6 +136,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
     utterance.lang = 'zh-CN'
     utterance.rate = 1
     utterance.pitch = 1
+    // 优先中文音色，找不到时交给浏览器选择默认 voice。
     utterance.voice =
       window.speechSynthesis.getVoices().find((voice) => voice.lang.toLowerCase().startsWith('zh')) ??
       null
@@ -138,6 +145,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
       speechPlaybackState.value = 'speaking'
     }
     utterance.onpause = () => {
+      // 旧 utterance 的异步回调不能覆盖新一轮朗读状态。
       if (activeUtterance === utterance) speechPlaybackState.value = 'paused'
     }
     utterance.onresume = () => {
@@ -166,6 +174,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
       return
     }
 
+    // 部分实现对重复 stop 抛错，此时使用 abort 强制结束。
     try {
       recognition.stop()
     } catch {
@@ -193,6 +202,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
     const nextRecognition = new Recognition()
     recognition = nextRecognition
     nextRecognition.lang = 'zh-CN'
+    // continuous 保持监听，interimResults 让输入框实时显示临时转写。
     nextRecognition.continuous = true
     nextRecognition.interimResults = true
     nextRecognition.maxAlternatives = 1
@@ -206,11 +216,13 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
       }
 
       const separator = recognitionBaseDraft && transcript ? ' ' : ''
+      // 每次识别结果都可能包含完整临时文本，始终基于开始前草稿覆盖，避免重复追加。
       options.draft.value = `${recognitionBaseDraft}${separator}${transcript}`.trimStart()
     }
     nextRecognition.onerror = (event) => {
       recognition = null
       isListening.value = false
+      // 主动停止和短暂无语音属于正常状态，不显示错误提示。
       if (event.error === 'aborted' || event.error === 'no-speech') return
 
       const message =
@@ -236,12 +248,14 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
   }
 
   onBeforeUnmount(() => {
+    // 页面卸载时释放麦克风和系统朗读队列。
     recognition?.abort()
     recognition = null
     stopSpeaking()
   })
 
   watch(options.draft, (value, previousValue) => {
+    // 用户清空输入框视为取消本轮语音输入。
     if (isListening.value && previousValue && !value) stopVoiceInput()
   })
 

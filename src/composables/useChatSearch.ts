@@ -5,6 +5,7 @@ import type { ChatMessage, ChatSession } from '@/stores/chat'
 import type { SearchResult } from '@/types/ui'
 
 interface ChatSearchOptions {
+  // 搜索结果跳转需要同时控制导航模式、活动会话和消息滚动。
   activeProject: Ref<string>
   activeProjectSessionId: Ref<string>
   activeSession: ComputedRef<ChatSession | undefined>
@@ -24,16 +25,19 @@ interface ChatSearchOptions {
 }
 
 const getSearchPreview = (content: string) => {
+  // 搜索卡片使用单行摘要，先压缩 Markdown 文本中的连续空白。
   const normalized = content.trim().replace(/\s+/g, ' ')
   return normalized.length > 96 ? `${normalized.slice(0, 96)}...` : normalized
 }
 
 const getResultPreview = (session: ChatSession) => {
+  // 会话级结果优先展示最近一次用户问题。
   const message = [...session.messages].reverse().find((item) => item.role === 'user') ?? session.messages.at(-1)
   return message?.content ?? '暂无消息'
 }
 
 export const useChatSearch = (options: ChatSearchOptions) => {
+  // 全局搜索跨普通会话和项目；会话内搜索只扫描当前 session。
   const isSearchOpen = ref(false)
   const isSessionSearchOpen = ref(false)
   const searchText = ref('')
@@ -43,6 +47,7 @@ export const useChatSearch = (options: ChatSearchOptions) => {
     const keyword = searchText.value.trim().toLowerCase()
     if (!keyword) return []
 
+    // 先拉平成统一结构，结果再携带 projectName 用于恢复正确导航模式。
     const allSessions: Array<{ projectName?: string; session: ChatSession }> = [
       ...options.chatSessions
         .filter((session) => !session.archivedAt && !session.deletedAt)
@@ -55,6 +60,7 @@ export const useChatSearch = (options: ChatSearchOptions) => {
     ]
 
     return allSessions.flatMap(({ projectName, session }) => {
+      // 同一会话可以同时产生一个标题结果和多个消息结果。
       const results: SearchResult[] = []
       const title = projectName ? `${projectName} / ${session.title}` : session.title
       if (session.title.toLowerCase().includes(keyword)) {
@@ -69,6 +75,7 @@ export const useChatSearch = (options: ChatSearchOptions) => {
       }
 
       session.messages.forEach((message) => {
+        // 助手消息通过 getMessagePlainText 排除思考过程后再搜索。
         const content = options.getMessagePlainText(message)
         if (!content.toLowerCase().includes(keyword)) return
         results.push({
@@ -88,6 +95,7 @@ export const useChatSearch = (options: ChatSearchOptions) => {
   })
 
   const sessionSearchResults = computed<SearchResult[]>(() => {
+    // 当前会话搜索无需重新切换 session，但仍保留统一 SearchResult 结构。
     const keyword = sessionSearchText.value.trim().toLowerCase()
     const session = options.activeSession.value
     if (!keyword || !session) return []
@@ -114,17 +122,20 @@ export const useChatSearch = (options: ChatSearchOptions) => {
   })
 
   const openSearch = async () => {
+    // 弹窗挂载完成后再聚焦输入框。
     isSearchOpen.value = true
     await nextTick()
     document.querySelector<HTMLInputElement>('.search-dialog input')?.focus()
   }
 
   const closeSearch = () => {
+    // 关闭时清空关键词，下次打开回到初始引导状态。
     isSearchOpen.value = false
     searchText.value = ''
   }
 
   const openSessionSearch = async () => {
+    // 空会话不打开无意义的搜索弹窗。
     if (!options.activeSession.value?.messages.length) {
       ElMessage.warning('当前会话还没有可搜索的消息')
       return
@@ -140,12 +151,15 @@ export const useChatSearch = (options: ChatSearchOptions) => {
   }
 
   const switchFromSearch = async (result: SearchResult) => {
+    // 搜索跳转会终止旧页面的生成，避免响应写入已经离开的会话界面。
     options.stopResponding()
     if (result.projectName) {
+      // 项目结果需要恢复项目名和项目会话 id。
       options.activeProject.value = result.projectName
       options.activeProjectSessionId.value = result.session.id
       options.currentMode.value = 'project'
     } else {
+      // 普通结果要清除项目导航，避免刷新时错误恢复到项目模式。
       options.switchSession(result.session.id)
       options.currentMode.value = 'chat'
       options.activeProject.value = ''
@@ -156,6 +170,7 @@ export const useChatSearch = (options: ChatSearchOptions) => {
     options.isPendingProjectSession.value = false
     options.closeMobileSidebar()
     closeSearch()
+    // 标题命中只打开会话，消息命中继续定位到具体消息。
     if (result.messageId) await options.jumpToMessage(result.messageId)
     else await options.scrollToBottom()
   }

@@ -1,5 +1,7 @@
 <template>
+  <!-- 主导航同时承担桌面固定侧栏和移动端抽屉两种布局。 -->
   <aside class="sidebar">
+    <!-- 品牌栏：搜索入口、标题和收起按钮。 -->
     <div class="sidebar-top">
       <button class="sidebar-icon-button" type="button" aria-label="搜索" @click="emit('openSearch')">
         <Search :size="18" />
@@ -20,12 +22,14 @@
       </button>
     </div>
 
+    <!-- 新建对话进入临时空白态，发送第一条消息后才真正创建会话。 -->
     <button class="new-chat" type="button" @click="emit('newChat')">
       <Plus :size="18" />
       <span>新建对话</span>
     </button>
 
     <div class="sidebar-scroll">
+      <!-- 项目导航：项目本身和项目内会话使用不同页面展示。 -->
       <section class="sidebar-section project-section" :class="{ closed: !projectsOpen }">
         <button class="section-toggle" type="button" @click="emit('toggleProjects')">
           <component :is="projectsOpen ? ArrowDown : ArrowRight" :size="14" />
@@ -40,6 +44,7 @@
             <span>新项目</span>
           </button>
           <div v-for="project in projects" :key="project" class="nav-row-wrap">
+            <!-- 选中样式只由 activeProject 决定，不代表已经选中项目内会话。 -->
             <button
               class="project-item"
               :class="{ active: project === activeProject }"
@@ -71,6 +76,7 @@
         </div>
       </section>
 
+      <!-- 普通会话列表不包含项目会话，也排除归档和回收站内容。 -->
       <section class="sidebar-section recent-section" :class="{ closed: !recentOpen }">
         <button class="section-toggle" type="button" @click="emit('toggleRecent')">
           <component :is="recentOpen ? ArrowDown : ArrowRight" :size="14" />
@@ -82,6 +88,7 @@
             <button
               class="session-item"
               :class="{
+                // 临时新建态和项目首页不能误高亮旧会话。
                 active:
                   session.id === activeSessionId &&
                   !isProjectHome &&
@@ -130,6 +137,7 @@
         </div>
       </section>
 
+      <!-- 侧边栏仅展示收藏摘要，完整筛选和删除操作放在管理弹窗。 -->
       <section class="sidebar-section favorite-section">
         <div class="favorite-section-header">
           <h2>收藏回答</h2>
@@ -151,6 +159,7 @@
       </section>
     </div>
 
+    <!-- 固定底部区域：会话管理、设置和当前用户信息。 -->
     <div class="sidebar-footer">
       <button class="footer-action" type="button" @click="emit('openConversationManager')">
         <Box :size="17" />
@@ -191,6 +200,7 @@ import {
 import type { ChatMessage, ChatSession } from '@/stores/chat'
 import type { FavoriteResult } from '@/types/ui'
 
+// 侧边栏保持无业务状态，所有导航和 CRUD 行为通过事件交给父组件。
 defineProps<{
   actionMenuStyle: Record<string, string>
   activeProject: string

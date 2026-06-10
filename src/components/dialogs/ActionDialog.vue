@@ -1,10 +1,12 @@
 <template>
+  <!-- 项目和会话的通用创建、重命名、删除确认框。 -->
   <div v-if="dialog" class="confirm-overlay" @click="emit('close')">
     <section class="confirm-dialog" @click.stop>
       <header>
         <h2>{{ getTitle(dialog) }}</h2>
         <button type="button" aria-label="关闭弹窗" @click="emit('close')"><Close :size="18" /></button>
       </header>
+      <!-- 创建/重命名使用输入框，删除操作展示影响说明。 -->
       <div class="confirm-body">
         <label v-if="dialog.type === 'create-project' || dialog.type.startsWith('rename')">
           <span>{{ dialog.type === 'create-project' ? '项目名称' : '名称' }}</span>
@@ -19,6 +21,7 @@
           <strong>{{ dialog.value }}</strong>
         </template>
       </div>
+      <!-- 危险操作通过 type 切换文案和视觉状态。 -->
       <footer>
         <button class="cancel-settings" type="button" @click="emit('close')">取消</button>
         <button class="confirm-primary" :class="{ danger: dialog.type.startsWith('delete') }" type="button" @click="emit('confirm')">
@@ -34,10 +37,12 @@ import { Close } from '@element-plus/icons-vue'
 
 import type { ActionDialogState } from '@/types/ui'
 
+// dialog 为 null 时组件完全不渲染，输入值由父级状态持有。
 defineProps<{ dialog: ActionDialogState | null }>()
 const emit = defineEmits<{ close: []; confirm: []; updateValue: [value: string] }>()
 
 const getTitle = (dialog: ActionDialogState) =>
+  // 联合类型保证每种操作都能得到对应标题。
   dialog.type === 'create-project'
     ? '新项目'
     : dialog.type.startsWith('rename')

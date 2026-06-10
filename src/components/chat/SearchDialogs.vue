@@ -1,4 +1,5 @@
 <template>
+  <!-- 全局搜索会跨普通会话和所有项目会话。 -->
   <div v-if="globalOpen" class="search-overlay" @click.self="emit('closeGlobal')">
     <div class="search-dialog">
       <div class="search-box">
@@ -20,6 +21,7 @@
           <Close :size="18" />
         </button>
       </div>
+      <!-- 空关键词展示引导，有关键词时展示标题和消息双类型结果。 -->
       <div class="search-results" :class="{ idle: !globalQuery.trim() }">
         <p v-if="!globalQuery.trim()" class="search-idle">输入关键词后开始搜索对话</p>
         <button
@@ -51,6 +53,7 @@
     </div>
   </div>
 
+  <!-- 当前会话搜索复用相同外观，但结果不会触发跨会话切换。 -->
   <div v-if="sessionOpen" class="search-overlay" @click.self="emit('closeSession')">
     <div class="search-dialog session-search-dialog">
       <div class="search-box">
@@ -106,6 +109,7 @@ import { Close, Search } from '@element-plus/icons-vue'
 
 import type { SearchResult } from '@/types/ui'
 
+// 两个弹窗共享组件，分别维护查询词、结果和选择事件。
 defineProps<{
   globalOpen: boolean
   globalQuery: string
@@ -125,6 +129,7 @@ const emit = defineEmits<{
 }>()
 
 const highlightParts = (content: string, keyword: string) => {
+  // 返回文本片段而非 v-html，避免搜索内容进入 HTML 注入路径。
   const normalizedKeyword = keyword.trim()
   if (!normalizedKeyword) return [{ text: content, hit: false }]
 
@@ -134,6 +139,7 @@ const highlightParts = (content: string, keyword: string) => {
   let cursor = 0
   let index = lowerContent.indexOf(lowerKeyword)
 
+  // 保留所有重复命中，模板据此逐段渲染 mark。
   while (index !== -1) {
     if (index > cursor) parts.push({ text: content.slice(cursor, index), hit: false })
     parts.push({ text: content.slice(index, index + normalizedKeyword.length), hit: true })

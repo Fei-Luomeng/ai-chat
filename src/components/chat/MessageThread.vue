@@ -1,4 +1,5 @@
 <template>
+  <!-- 消息滚动容器统一承接代码复制、引用悬浮和滚动位置监听。 -->
   <div
     ref="messagesElement"
     class="messages"
@@ -7,6 +8,7 @@
     @mouseout="hideCitationPreview"
     @scroll="emit('messageAreaScroll')"
   >
+    <!-- 长会话采用向前分页，避免首次挂载全部历史消息。 -->
     <button
       v-if="hiddenMessageCount"
       class="load-earlier-messages"
@@ -16,6 +18,7 @@
       <ArrowUp :size="15" />
       <span>加载更早的 {{ Math.min(hiddenMessageCount, 80) }} 条消息</span>
     </button>
+    <!-- 每条消息保留 id 和 role 数据属性，供搜索定位与滚动导航使用。 -->
     <article
       v-for="message in messages"
       :key="message.id"
@@ -26,6 +29,7 @@
     >
       <div class="avatar">{{ message.role === 'assistant' ? 'AI' : '你' }}</div>
       <div class="message-content">
+        <!-- 元信息区同时承载作者、分支切换器和发送时间。 -->
         <div class="message-meta">
           <strong>{{ message.role === 'assistant' ? 'AI Chat' : '你' }}</strong>
           <div v-if="getBranchSwitcher(message)" class="branch-switcher" aria-label="切换消息分支">
@@ -50,6 +54,7 @@
           <span>{{ new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(message.createdAt) }}</span>
         </div>
         <div class="message-body">
+          <!-- 编辑用户问题不会原地覆盖，而是提交后创建新聊天分支。 -->
           <div v-if="message.role === 'user' && editingMessageId === message.id" class="message-editor">
             <textarea
               :value="editingDraft"
@@ -62,6 +67,7 @@
             </div>
           </div>
           <template v-else>
+            <!-- 思考内容与最终答案分开渲染，并允许单条消息折叠。 -->
             <div v-if="message.role === 'assistant' && getReasoningContent(message)" class="reasoning-panel">
               <button
                 class="reasoning-toggle"
@@ -77,6 +83,7 @@
                 <div class="reasoning-markdown markdown-body" v-html="renderMarkdown(getReasoningContent(message))" />
               </div>
             </div>
+            <!-- 流式消息读取实时缓存，完成后切换为持久化 message.content。 -->
             <div
               v-if="message.id === streamingAssistantMessageId && streamingAssistantMessageContent"
               class="streaming-markdown"
@@ -97,6 +104,7 @@
               :sources="message.sources"
             />
           </template>
+          <!-- 请求错误作为消息的一部分保存，便于离开页面后仍可重试。 -->
           <section
             v-if="message.role === 'assistant' && message.error"
             class="generation-error"
@@ -112,6 +120,7 @@
               <span>重试</span>
             </button>
           </section>
+          <!-- token 上限导致的中断和网络错误使用不同恢复入口。 -->
           <div
             v-if="message.role === 'assistant' && message.truncated && !message.error"
             class="continue-generation"
@@ -123,6 +132,7 @@
             </button>
           </div>
         </div>
+        <!-- 生成期间隐藏操作栏，避免对仍在变化的消息执行操作。 -->
         <div
           v-if="
             !isResponding &&
@@ -183,6 +193,7 @@
       </div>
     </article>
 
+    <!-- 首个 token 到来前尚未创建助手消息，使用独立等待占位。 -->
     <article v-if="isWaitingForFirstToken" class="message-row assistant">
       <div class="avatar">AI</div>
       <div class="message-content">
@@ -195,6 +206,7 @@
     </article>
   </div>
 
+  <!-- 右侧导航只索引用户问题，用于快速跳转到对话轮次。 -->
   <aside v-if="navigatorItems.length" class="message-navigator" aria-label="当前对话导航">
     <button
       v-for="item in navigatorItems"
@@ -213,6 +225,7 @@
     </button>
   </aside>
 
+  <!-- 导航完整标题使用脱离滚动容器的浮层，避免被 overflow 裁切。 -->
   <div
     v-if="hoveredNavigatorItem"
     class="message-nav-tooltip"
@@ -221,6 +234,7 @@
     {{ hoveredNavigatorItem.label }}
   </div>
 
+  <!-- 行内引用悬浮预览与来源卡片共享同一份 source 数据。 -->
   <aside
     v-if="citationPreview"
     class="citation-preview"
@@ -290,6 +304,7 @@ interface CitationPreview {
   top: number
 }
 
+// 父级提供消息业务函数，本组件只处理消息列表中的局部 DOM 交互。
 const props = defineProps<{
   activeMessageId: string
   editingDraft: string
@@ -339,6 +354,7 @@ const emit = defineEmits<{
 }>()
 
 const messagesElement = ref<HTMLElement | null>(null)
+// 引用预览和来源高亮属于短暂 UI 状态，不写入会话数据。
 const citationPreview = ref<CitationPreview | null>(null)
 let highlightedSourceCard: HTMLElement | null = null
 let sourceHighlightTimer: number | undefined
@@ -361,6 +377,7 @@ const getSourceLabel = (source: WebSearchSource) => {
 const getSourceInitial = (source: WebSearchSource) => getSourceLabel(source).slice(0, 1).toUpperCase()
 
 const getCitationContext = (target: EventTarget | null) => {
+  // Markdown 由 v-html 渲染，引用交互只能通过消息容器进行事件委托。
   const citation = (target as HTMLElement | null)?.closest<HTMLAnchorElement>(
     '.citation-link:not(.citation-missing)',
   )
@@ -378,6 +395,7 @@ const showCitationPreview = (event: MouseEvent) => {
   if (!context) return
 
   const bounds = context.citation.getBoundingClientRect()
+  // 预览卡片限制在视口内，并优先显示在引用编号上方。
   const previewWidth = Math.min(320, window.innerWidth - 24)
   const left = Math.max(
     12,
@@ -400,6 +418,7 @@ const showCitationPreview = (event: MouseEvent) => {
 }
 
 const hideCitationPreview = (event: MouseEvent) => {
+  // 只有从引用链接离开时才关闭，消息区其他 mouseout 不应影响预览。
   if (!(event.target as HTMLElement | null)?.closest('.citation-link')) return
   citationPreview.value = null
 }
@@ -418,6 +437,7 @@ const focusCitationSource = (event: MouseEvent) => {
   highlightedSourceCard?.classList.remove('source-card-highlight')
   if (sourceHighlightTimer !== undefined) window.clearTimeout(sourceHighlightTimer)
 
+  // 点击行内编号时滚动到同一消息下的来源卡片，并短暂高亮。
   highlightedSourceCard = sourceCard
   sourceCard.scrollIntoView({ behavior: 'smooth', block: 'center' })
   sourceCard.classList.add('source-card-highlight')
@@ -430,11 +450,13 @@ const focusCitationSource = (event: MouseEvent) => {
 }
 
 const handleMessageClick = (event: MouseEvent) => {
+  // 引用定位优先处理，随后继续把点击交给父级识别代码复制按钮。
   focusCitationSource(event)
   emit('messageAreaClick', event)
 }
 
 onMounted(() => {
+  // 将真实滚动元素交给 useChatApp，用于滚动到底部和搜索定位。
   if (messagesElement.value) emit('messageAreaReady', messagesElement.value)
 })
 

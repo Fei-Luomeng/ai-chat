@@ -1,6 +1,8 @@
 <template>
+  <!-- 项目首页是项目容器视图，不代表已经进入某条具体会话。 -->
   <div class="project-home">
     <div class="project-home-inner">
+      <!-- 项目标题和说明会作为项目上下文的一部分参与后续请求。 -->
       <div class="project-title-row">
         <FolderOpened :size="34" />
         <h1>{{ projectName }}</h1>
@@ -11,6 +13,7 @@
         placeholder="添加项目说明，让这个项目里的对话有更清晰的背景。"
         @input="emit('updateDescription', ($event.target as HTMLTextAreaElement).value)"
       />
+      <!-- 项目首页可直接套用模板并创建第一条项目会话。 -->
       <PromptTemplateBar
         id-prefix="project"
         :templates="templates"
@@ -35,9 +38,11 @@
         @toggle-web-search="emit('toggleWebSearch')"
         @update-draft="emit('updateDraft', $event)"
       />
+      <!-- 当前只提供聊天类型，保留 tabs 结构便于以后扩展项目内容类型。 -->
       <div class="project-tabs">
         <button class="active" type="button">聊天</button>
       </div>
+      <!-- 项目内会话列表与普通侧边栏会话相互独立。 -->
       <div class="project-chat-list">
         <article
           v-for="session in sessions"
@@ -63,6 +68,7 @@
           >
             <MoreFilled :size="17" />
           </button>
+          <!-- 操作菜单定位由外层 composable 统一计算。 -->
           <div
             v-if="openActionMenu === `home-session-${session.id}`"
             class="action-menu home-menu"
@@ -100,6 +106,7 @@ import PromptTemplateBar from '@/components/chat/PromptTemplateBar.vue'
 import type { ChatSession } from '@/stores/chat'
 import type { PromptTemplate } from '@/types/ui'
 
+// 组件只负责项目首页展示，创建会话和持久化仍由父级完成。
 defineProps<{
   actionMenuStyle: Record<string, string>
   agentMode: boolean

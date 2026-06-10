@@ -1,6 +1,7 @@
 import { nextTick, onBeforeUnmount, onMounted, type ComputedRef, type Ref } from 'vue'
 
 interface GlobalInteractionsOptions {
+  // 关闭函数由各功能模块提供，本模块只负责决定调用顺序。
   actionDialog: Ref<unknown | null>
   closeActionDialog: () => void
   closeContextClearDialog: () => void
@@ -34,9 +35,11 @@ interface GlobalInteractionsOptions {
 const MOBILE_BREAKPOINT = 780
 
 export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
+  // 集中注册全局事件，避免多个组件各自监听 document 后产生冲突。
   let mobileMediaQuery: MediaQueryList | undefined
 
   const hasOpenDialog = () =>
+    // 快捷发送和自动聚焦在任意弹窗打开时都应暂停。
     options.isSearchOpen.value ||
     options.isSessionSearchOpen.value ||
     options.isFavoritesOpen.value ||
@@ -48,6 +51,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
     Boolean(options.actionDialog.value)
 
   const focusDraftInput = async () => {
+    // 页面最多只会有一个可见输入器，按视图优先级查询。
     if (hasOpenDialog()) return
     await nextTick()
     document
@@ -58,6 +62,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
   }
 
   const closeTopDialog = () => {
+    // Escape 每次只关闭优先级最高的一层界面。
     const dialogs: Array<[Ref<boolean>, () => void]> = [
       [options.isSearchOpen, options.closeSearch],
       [options.isSessionSearchOpen, options.closeSessionSearch],
@@ -70,18 +75,22 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
     ]
     const openDialog = dialogs.find(([state]) => state.value)
     if (openDialog) {
+      // 找到第一层后立即返回，避免一次 Escape 关闭多个弹窗。
       openDialog[1]()
       return true
     }
     if (options.actionDialog.value) {
+      // 通用确认框的状态不是 boolean，因此单独处理。
       options.closeActionDialog()
       return true
     }
     if (options.openActionMenu.value) {
+      // 没有弹窗时 Escape 继续关闭行操作菜单。
       options.openActionMenu.value = ''
       return true
     }
     if (options.isMobileViewport.value && !options.isSidebarCollapsed.value) {
+      // 移动端最后关闭侧栏抽屉。
       options.isSidebarCollapsed.value = true
       return true
     }
@@ -89,8 +98,10 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
   }
 
   const handleGlobalKeyDown = (event: KeyboardEvent) => {
+    // Cmd/Ctrl+K 搜索、Cmd/Ctrl+Enter 发送、/ 聚焦输入框。
     const isModKey = event.metaKey || event.ctrlKey
     if (isModKey && event.key.toLowerCase() === 'k') {
+      // 覆盖浏览器默认搜索，打开应用全局搜索。
       event.preventDefault()
       void options.openSearch()
     } else if (event.key === 'Escape') {
@@ -98,6 +109,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
     } else if (isModKey && event.key === 'Enter') {
       event.preventDefault()
       if (options.isResponding.value || !options.hasDraft.value || hasOpenDialog()) return
+      // 项目首页没有 active session，使用专门的创建并发送流程。
       if (options.isProjectMode.value && options.isProjectHome.value) void options.sendProjectMessage()
       else void options.send()
     } else if (
@@ -106,15 +118,18 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
         'input, textarea, [contenteditable="true"], .el-input, .el-textarea',
       )
     ) {
+      // 用户在表单控件内输入“/”时保留正常字符输入。
       event.preventDefault()
       void focusDraftInput()
     }
   }
 
   const handleGlobalPointerDown = (event: PointerEvent) => {
+    // 使用捕获阶段，使点击外部关闭不受子组件 stopPropagation 影响。
     const target = event.target as HTMLElement | null
     if (!target) return
     if (options.actionDialog.value && !target.closest('.confirm-dialog')) options.closeActionDialog()
+    // 设置弹窗允许点击遮罩关闭，其他弹窗主要由自身遮罩事件处理。
     if (options.isSettingsOpen.value && !target.closest('.settings-dialog')) options.closeSettings()
     if (
       options.openActionMenu.value &&
@@ -127,11 +142,13 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
   }
 
   const handleViewportChange = (event: MediaQueryListEvent) => {
+    // 跨过断点时同步抽屉状态，手机端默认关闭，桌面端默认展开。
     options.isMobileViewport.value = event.matches
     options.isSidebarCollapsed.value = event.matches
   }
 
   onMounted(() => {
+    // matchMedia 比 resize 更直接地表达断点变化。
     mobileMediaQuery = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`)
     mobileMediaQuery.addEventListener('change', handleViewportChange)
     document.addEventListener('pointerdown', handleGlobalPointerDown, true)
@@ -139,6 +156,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
   })
 
   onBeforeUnmount(() => {
+    // document 监听必须成对移除，避免热更新后重复触发。
     mobileMediaQuery?.removeEventListener('change', handleViewportChange)
     document.removeEventListener('pointerdown', handleGlobalPointerDown, true)
     document.removeEventListener('keydown', handleGlobalKeyDown)

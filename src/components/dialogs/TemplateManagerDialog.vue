@@ -1,4 +1,5 @@
 <template>
+  <!-- 左侧选择已有模板，右侧复用同一表单进行新增和编辑。 -->
   <div v-if="open" class="confirm-overlay" @click.self="emit('close')">
     <section class="template-dialog" @click.stop>
       <header>
@@ -6,6 +7,7 @@
         <button type="button" aria-label="关闭模板管理" @click="emit('close')"><Close :size="18" /></button>
       </header>
       <div class="template-body">
+        <!-- 模板列表只切换编辑目标，不会立即修改模板内容。 -->
         <div class="template-list">
           <button
             v-for="template in templates"
@@ -19,6 +21,7 @@
           </button>
           <p v-if="templates.length === 0" class="template-empty">还没有模板。</p>
         </div>
+        <!-- 表单值由父级草稿维护，保存时再写回模板列表。 -->
         <div class="template-form">
           <label>
             <span>名称</span>
@@ -42,6 +45,7 @@
           </div>
         </div>
       </div>
+      <!-- 恢复默认和删除当前模板是列表级操作。 -->
       <footer>
         <button class="cancel-settings" type="button" @click="emit('restoreDefaults')">恢复默认</button>
         <button v-if="editingId" class="confirm-primary danger" type="button" @click="emit('deleteTemplate', editingId)">
@@ -58,6 +62,7 @@ import { Close } from '@element-plus/icons-vue'
 
 import type { PromptTemplate } from '@/types/ui'
 
+// 组件保持无本地表单状态，避免关闭重开后残留旧编辑内容。
 defineProps<{
   draftLabel: string
   draftPrompt: string

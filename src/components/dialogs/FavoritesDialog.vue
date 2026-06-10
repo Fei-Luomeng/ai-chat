@@ -1,10 +1,12 @@
 <template>
+  <!-- 收藏管理支持关键词和来源范围组合筛选。 -->
   <div v-if="open" class="confirm-overlay" @click.self="emit('close')">
     <section class="favorites-dialog" @click.stop>
       <header>
         <div><p>收藏管理</p><h2>收藏回答</h2></div>
         <button type="button" aria-label="关闭收藏管理" @click="emit('close')"><Close :size="18" /></button>
       </header>
+      <!-- 搜索词与范围均由父级计算 filteredFavorites。 -->
       <div class="favorites-toolbar">
         <label>
           <Search :size="17" />
@@ -18,6 +20,7 @@
           <option v-for="option in scopeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
         </select>
       </div>
+      <!-- 打开收藏会先切换到原会话，再定位到对应消息。 -->
       <div class="favorites-manager-list">
         <article v-for="favorite in filteredFavorites" :key="`manage-${favorite.id}`">
           <button class="favorite-open" type="button" @click="emit('openFavorite', favorite)">
@@ -40,6 +43,7 @@ import { Close, Search } from '@element-plus/icons-vue'
 
 import type { FavoriteResult } from '@/types/ui'
 
+// favorites 用于区分“没有收藏”和“筛选后无结果”两种空状态。
 defineProps<{
   favorites: FavoriteResult[]
   filteredFavorites: FavoriteResult[]

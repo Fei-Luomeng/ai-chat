@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 
 export type MessageRole = 'user' | 'assistant'
 
+// 搜索来源会同时用于正文引用、悬浮预览和回答底部卡片。
 export interface WebSearchSource {
   icon?: string
   publishedAt?: string
@@ -13,14 +14,17 @@ export interface WebSearchSource {
 }
 
 export interface ChatMessage {
+  // branchOf 指向原始用户消息；没有该字段的消息属于主版本。
   branchLabel?: string
   branchOf?: string
   id: string
   role: MessageRole
   content: string
+  // error 和 truncated 分别对应“重试”和“继续生成”两种恢复方式。
   error?: string
   favorited?: boolean
   reasoningContent?: string
+  // 思考起止时间用于生成期间计时和历史消息耗时展示。
   reasoningEndedAt?: number
   reasoningStartedAt?: number
   sources?: WebSearchSource[]
@@ -29,9 +33,12 @@ export interface ChatMessage {
 }
 
 export interface ChatSession {
+  // 每个原始用户消息只保存一个当前可见分支 id。
   activeBranchIds?: Record<string, string>
+  // 归档和删除采用时间戳软状态，便于恢复并按时间排序。
   archivedAt?: number
   branchDepth?: number
+  // 新聊天分支保留父会话信息，用于列表标识和后续扩展。
   branchParentSessionId?: string
   branchParentTitle?: string
   branchRootSessionId?: string
@@ -46,6 +53,7 @@ export interface ChatSession {
 }
 
 interface SendOptions {
+  // UI 层发送参数；未提供的值由请求层使用默认策略。
   agentMode?: boolean
   branchLabel?: string
   branchOf?: string
@@ -58,6 +66,7 @@ interface SendOptions {
 }
 
 interface RequestAssistantOptions extends SendOptions {
+  // 流式协议通过回调上报，上层决定写入普通会话还是项目会话。
   onError?: (message: string) => void | Promise<void>
   onFinish?: (truncated: boolean) => void | Promise<void>
   onReasoning?: (token: string) => void | Promise<void>
@@ -74,8 +83,9 @@ const welcomeMessage: ChatMessage = {
   createdAt: Date.now(),
 }
 
+// API、上下文和输出长度限制集中定义，避免散落在请求流程中。
 const createId = () => crypto.randomUUID()
-const BIGMODEL_API_KEY = ''
+const BIGMODEL_API_KEY = 'b236db0425f94a2db8743cf915e12c3f.FE9eFM5sv1BMn5OU'
 const BIGMODEL_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 const BIGMODEL_MODEL = 'glm-4.7-flash'
 const CONTEXT_MESSAGE_LIMIT = 20
@@ -95,6 +105,7 @@ const STORAGE_KEY = 'ai-chat:sessions'
 const TOOL_STATE_KEY = 'ai-chat:tool-state'
 
 type ApiMessage = {
+  // tool 字段仅在 Agent 第二轮请求中出现。
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
   tool_call_id?: string
@@ -111,6 +122,7 @@ type AgentToolCall = {
 }
 
 type StreamReply = {
+  // 无论响应是否真正流式，最终都规范化为同一结果结构。
   finishReason: string
   sources: WebSearchSource[]
   text: string
@@ -118,6 +130,7 @@ type StreamReply = {
 }
 
 const summarizeTitle = (content: string) => {
+  // 去掉常见指令前缀，让自动标题更接近实际主题。
   const normalized = content
     .trim()
     .replace(/\s+/g, ' ')
@@ -136,6 +149,7 @@ const finalAnswerStartPattern =
 
 export const stripFinalAnswerMarker = (content: string) => content.replace(finalAnswerStartPattern, '').trimStart()
 
+// 兼容把“思考过程 + 最终回答”混在同一文本字段中的模型响应。
 export const splitReasoningFromAnswer = (content: string) => {
   const normalized = content.trim()
   if (!normalized) return null
@@ -173,6 +187,7 @@ export const splitReasoningFromAnswer = (content: string) => {
 let responseAbortController: AbortController | null = null
 
 const normalizeStoredMessages = (messages: ChatMessage[]) =>
+  // 兼容旧数据，并清除崩溃或刷新时残留的无内容助手消息。
   messages.filter(
     (message, index) =>
       !(index === 0 && message.role === 'assistant' && message.content === welcomeMessage.content) &&
@@ -180,6 +195,7 @@ const normalizeStoredMessages = (messages: ChatMessage[]) =>
   )
 
 const readStoredSessions = () => {
+  // localStorage 数据视为不可信输入，解析失败时回退为空列表。
   try {
     if (!window.localStorage) return []
     const stored = window.localStorage.getItem(STORAGE_KEY)
@@ -230,6 +246,7 @@ const readStoredAgentModeEnabled = () => {
 }
 
 const getTextFromContent = (content: unknown) => {
+  // 非流式文本用于最终结果，因此会 trim 首尾空白。
   if (typeof content === 'string') return content.trim()
   if (!Array.isArray(content)) return ''
 
@@ -245,6 +262,7 @@ const getTextFromContent = (content: unknown) => {
 }
 
 const getRawTextFromContent = (content: unknown) => {
+  // 流式增量必须保留原始空格和换行，不能使用 trim。
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
 
@@ -259,6 +277,7 @@ const getRawTextFromContent = (content: unknown) => {
 }
 
 const getAssistantText = (data: unknown) => {
+  // 同时兼容 OpenAI 风格及部分代理层包装后的非流式字段。
   if (!data || typeof data !== 'object') return ''
 
   const response = data as Record<string, any>
@@ -275,6 +294,7 @@ const getAssistantText = (data: unknown) => {
 }
 
 const getStreamText = (data: unknown) => {
+  // 兼容 delta、message 和代理层直接 content 三种增量结构。
   if (!data || typeof data !== 'object') return ''
 
   const response = data as Record<string, any>
@@ -290,6 +310,7 @@ const getStreamText = (data: unknown) => {
 }
 
 const getStreamReasoningText = (data: unknown) => {
+  // 当前供应商通过 reasoning_content 返回独立思考增量。
   if (!data || typeof data !== 'object') return ''
 
   const response = data as Record<string, any>
@@ -300,6 +321,7 @@ const getStreamReasoningText = (data: unknown) => {
 }
 
 const normalizeWebSearchSource = (source: any, index: number): WebSearchSource | null => {
+  // 无有效 HTTP URL 的候选项不能生成可点击来源卡片。
   const url = getRawTextFromContent(source?.link ?? source?.url).trim()
   if (!/^https?:\/\//i.test(url)) return null
 
@@ -332,6 +354,7 @@ const getWebSearchSourcesFromData = (data: unknown) => {
   const candidates: unknown[] = []
   const visited = new WeakSet<object>()
 
+  // 不同兼容接口会把来源塞在响应、工具参数或 JSON 字符串中，因此递归收集。
   const collect = (value: unknown, key = '', depth = 0) => {
     if (depth > 12 || value === null || value === undefined) return
 
@@ -393,6 +416,7 @@ const getWebSearchSourcesFromData = (data: unknown) => {
 }
 
 const appendWebSearchSources = (sources: WebSearchSource[], incoming: WebSearchSource[]) => {
+  // URL 作为稳定去重键，后到字段可补全先到的简略来源。
   for (const source of incoming) {
     const existingIndex = sources.findIndex((item) => item.url === source.url)
     if (existingIndex >= 0) {
@@ -413,6 +437,7 @@ const normalizeToolCall = (call: any, fallbackIndex = 0): AgentToolCall => ({
 })
 
 const getToolCallsFromData = (data: unknown) => {
+  // 返回尚未拼接的调用片段，appendToolCallChunks 负责按 index 合并。
   if (!data || typeof data !== 'object') return []
 
   const response = data as Record<string, any>
@@ -434,6 +459,7 @@ const getToolCallsFromData = (data: unknown) => {
 }
 
 const getFinishReasonFromData = (data: unknown) => {
+  // finish reason 用于判断是否因 token 上限中断。
   if (!data || typeof data !== 'object') return ''
 
   const response = data as Record<string, any>
@@ -450,6 +476,7 @@ const appendToolCallChunks = (
   toolCalls: AgentToolCall[],
   chunks: Array<{ index: number; id: string; type: string; name: string; arguments: string }>,
 ) => {
+  // 流式 tool_calls 会把名称和参数拆成多段，按 index 重新拼成完整调用。
   for (const chunk of chunks) {
     const current =
       toolCalls[chunk.index] ??
@@ -485,6 +512,7 @@ const getApiErrorText = (data: unknown) => {
 }
 
 const buildWebSearchTools = (enabled: boolean) => [
+  // 即使关闭也保留平台要求的工具结构，由 enable 控制是否执行搜索。
   {
     type: 'web_search',
     web_search: {
@@ -560,6 +588,7 @@ const buildRequestTools = (webSearchEnabled: boolean, agentModeEnabled: boolean)
 ]
 
 const parseToolArguments = (rawArguments: string) => {
+  // 模型参数格式错误时返回空对象，让具体工具给出可读错误。
   try {
     return rawArguments ? JSON.parse(rawArguments) : {}
   } catch {
@@ -571,6 +600,7 @@ const calculateExpression = (expression: unknown) => {
   const normalized = String(expression ?? '').trim()
   if (!normalized) throw new Error('缺少 expression 参数。')
   if (normalized.length > 120) throw new Error('表达式太长。')
+  // Function 只接收经过白名单限制的算术字符，禁止标识符和属性访问。
   if (!/^[\d+\-*/().%\s]+$/.test(normalized)) {
     throw new Error('只支持数字、括号和 + - * / % 运算符。')
   }
@@ -584,6 +614,7 @@ const calculateExpression = (expression: unknown) => {
 }
 
 const executeAgentTool = (toolCall: AgentToolCall, messages: ChatMessage[]) => {
+  // 当前 Agent 工具全部在浏览器本地执行，不依赖额外后端。
   const args = parseToolArguments(toolCall.function.arguments)
 
   try {
@@ -631,6 +662,7 @@ const executeAgentTool = (toolCall: AgentToolCall, messages: ChatMessage[]) => {
 }
 
 const readErrorResponse = async (response: Response) => {
+  // 优先提取结构化 API 错误，非 JSON 响应保留原始文本。
   const rawText = await response.text()
   if (!rawText) return `请求失败：${response.status}`
 
@@ -643,6 +675,7 @@ const readErrorResponse = async (response: Response) => {
 }
 
 const buildApiMessages = (messages: ChatMessage[], systemPrompt = SYSTEM_PROMPT, contextClearedAt = 0): ApiMessage[] => {
+  // 页面可以保留全部历史，但发给模型的上下文受清空时间和长度双重限制。
   const conversation = messages
     .filter((message) => message.role === 'user' || message.role === 'assistant')
     .filter((message) => !contextClearedAt || message.createdAt >= contextClearedAt)
@@ -651,6 +684,7 @@ const buildApiMessages = (messages: ChatMessage[], systemPrompt = SYSTEM_PROMPT,
   const selected: ApiMessage[] = []
   let totalChars = 0
 
+  // 从最新消息向前截取，优先保证当前问题的上下文不被旧历史挤掉。
   for (const message of conversation.slice(-CONTEXT_MESSAGE_LIMIT).reverse()) {
     const content = message.content.trim()
     if (!content) continue
@@ -680,6 +714,7 @@ const estimateMaxTokens = (
   apiMessages: ApiMessage[],
   deepThinking = false,
 ) => {
+  // 根据当前问题和上下文规模给出上限，设置页的显式值会覆盖此估算。
   const latestUserChars = [...apiMessages].reverse().find((message) => message.role === 'user')?.content.length ?? 0
   const contextChars = apiMessages.reduce((total, message) => total + message.content.length, 0)
 
@@ -702,11 +737,13 @@ const createStreamTypewriter = (
   onToken?: (token: string) => void | Promise<void>,
   signal?: AbortSignal,
 ) => {
+  // 网络分片大小不稳定；独立队列把展示节奏统一成逐字符更新。
   let queue = ''
   let isRunning = false
   const drainResolvers: Array<() => void> = []
 
   const resolveDrain = () => {
+    // 只有队列和当前帧都结束后，流读取方才能安全进入收尾阶段。
     if (queue || isRunning) return
 
     while (drainResolvers.length) {
@@ -715,6 +752,7 @@ const createStreamTypewriter = (
   }
 
   const pump = async () => {
+    // Abort 后立即清空待展示字符，避免停止按钮按下后继续“吐字”。
     if (signal?.aborted) {
       queue = ''
       isRunning = false
@@ -741,6 +779,7 @@ const createStreamTypewriter = (
 
   return {
     enqueue(token: string) {
+      // 新分片只追加队列，已有动画循环时不重复启动 requestAnimationFrame。
       if (!token || signal?.aborted) return
 
       queue += token
@@ -764,6 +803,7 @@ const emitFullTextWithTypewriter = async (
   onToken?: (token: string) => void | Promise<void>,
   signal?: AbortSignal,
 ) => {
+  // 非流式接口也复用相同展示节奏，避免 UI 行为因供应商而不同。
   if (!text || !onToken) return
 
   const typewriter = createStreamTypewriter(onToken, signal)
@@ -778,6 +818,7 @@ const readStreamResponse = async (
   signal?: AbortSignal,
 ) => {
   if (!response.body) {
+    // 某些代理不返回 ReadableStream，退化为一次性 JSON 响应。
     const data = await response.json()
     const text = getAssistantText(data)
     await emitFullTextWithTypewriter(text, onToken, signal)
@@ -811,6 +852,7 @@ const readStreamResponse = async (
   const toolCalls: AgentToolCall[] = []
   const sources: WebSearchSource[] = []
 
+  // 按 SSE 行解析，同时累积正文、思考、工具调用和联网来源。
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
@@ -827,6 +869,7 @@ const readStreamResponse = async (
 
       const payload = trimmed.slice(5).trim()
       if (payload === '[DONE]') {
+        // 工具参数中也可能包含搜索结果，结束前再做一次来源提取。
         appendWebSearchSources(
           sources,
           getWebSearchSourcesFromData({
@@ -862,6 +905,7 @@ const readStreamResponse = async (
   }
 
   if (!fullText && rawText.trim()) {
+    // 服务端声明流式却返回整段 JSON/文本时，尝试进行最终兜底解析。
     let fallbackText = ''
 
     try {
@@ -889,6 +933,7 @@ const readStreamResponse = async (
 }
 
 export const useChatStore = defineStore('chat', {
+  // Store 只管理普通会话；项目会话由 useChatApp 按项目名称分组维护。
   state: () => ({
     sessions: readStoredSessions() as ChatSession[],
     activeSessionId: '',
@@ -900,6 +945,7 @@ export const useChatStore = defineStore('chat', {
     streamingReasoningStartedAt: 0,
   }),
   getters: {
+    // 当前会话失效时回退到第一个可见会话，避免归档或删除后展示空引用。
     activeSession: (state) =>
       state.sessions.find(
         (session) =>
@@ -911,6 +957,7 @@ export const useChatStore = defineStore('chat', {
   },
   actions: {
     createSession() {
+      // 新会话插到列表首位，并立即成为普通模式的活动会话。
       const now = Date.now()
       const session: ChatSession = {
         id: createId(),
@@ -925,9 +972,11 @@ export const useChatStore = defineStore('chat', {
       return session.id
     },
     switchSession(sessionId: string) {
+      // 切换本身不写 localStorage，活动位置由应用级状态决定。
       this.activeSessionId = sessionId
     },
     renameSession(sessionId: string, title: string) {
+      // 空标题不覆盖原值。
       const session = this.sessions.find((item) => item.id === sessionId)
       const normalized = title.trim()
       if (!session || !normalized) return
@@ -937,28 +986,33 @@ export const useChatStore = defineStore('chat', {
       writeStoredSessions(this.sessions)
     },
     deleteSession(sessionId: string) {
+      // 该操作是彻底删除；软删除使用 trashSession。
       const index = this.sessions.findIndex((session) => session.id === sessionId)
       if (index === -1) return
 
       this.sessions.splice(index, 1)
       if (this.activeSessionId === sessionId) {
+        // 删除活动会话后允许回退到列表中的下一条。
         this.activeSessionId = this.sessions[0]?.id ?? ''
       }
       writeStoredSessions(this.sessions)
     },
     archiveSession(sessionId: string) {
+      // 归档和回收站状态互斥。
       const session = this.sessions.find((item) => item.id === sessionId)
       if (!session) return
       session.archivedAt = Date.now()
       session.deletedAt = undefined
       session.updatedAt = Date.now()
       if (this.activeSessionId === sessionId) {
+        // 活动会话被隐藏时切换到下一条可见会话。
         this.activeSessionId =
           this.sessions.find((item) => !item.archivedAt && !item.deletedAt && item.id !== sessionId)?.id ?? ''
       }
       writeStoredSessions(this.sessions)
     },
     trashSession(sessionId: string) {
+      // 回收站保留完整消息数据，直到用户选择彻底删除。
       const session = this.sessions.find((item) => item.id === sessionId)
       if (!session) return
       session.deletedAt = Date.now()
@@ -971,6 +1025,7 @@ export const useChatStore = defineStore('chat', {
       writeStoredSessions(this.sessions)
     },
     restoreSession(sessionId: string) {
+      // 不关心来源是归档还是回收站，恢复时统一清除两个标记。
       const session = this.sessions.find((item) => item.id === sessionId)
       if (!session) return
       session.archivedAt = undefined
@@ -979,6 +1034,7 @@ export const useChatStore = defineStore('chat', {
       writeStoredSessions(this.sessions)
     },
     toggleSessionPinned(sessionId: string) {
+      // 排序由 useChatApp 的 sortSessions 统一处理。
       const session = this.sessions.find((item) => item.id === sessionId)
       if (!session) return
 
@@ -986,6 +1042,7 @@ export const useChatStore = defineStore('chat', {
       writeStoredSessions(this.sessions)
     },
     clearSessionContext(sessionId: string) {
+      // 只写时间边界，历史消息仍保留在 session.messages。
       const session = this.sessions.find((item) => item.id === sessionId)
       if (!session) return
 
@@ -994,18 +1051,21 @@ export const useChatStore = defineStore('chat', {
       writeStoredSessions(this.sessions)
     },
     clearActiveSession() {
+      // 与“清空上下文”不同，该操作真正删除当前会话全部消息。
       const session = this.activeSession
       if (!session) return
 
       this.stopResponding()
 
       const now = Date.now()
+      // 清空后复用当前 session id，避免侧边栏产生额外空会话。
       session.title = '新的对话'
       session.messages = []
       session.updatedAt = now
       writeStoredSessions(this.sessions)
     },
     async sendMessage(content: string, options: SendOptions = {}) {
+      // 普通会话发送流程：写入问题、消费流、整理最终消息、保存会话。
       let session = this.activeSession
       const trimmedContent = content.trim()
 
@@ -1030,6 +1090,7 @@ export const useChatStore = defineStore('chat', {
       }
       session.messages.push(userMessage)
       if (options.branchOf) {
+        // 发送新版本后立即把它设为该轮当前分支。
         session.activeBranchIds = {
           ...(session.activeBranchIds ?? {}),
           [options.branchOf]: userMessage.id,
@@ -1037,22 +1098,26 @@ export const useChatStore = defineStore('chat', {
       }
 
       if (session.messages.length === 1) {
+        // 标题只在首条消息时自动生成，之后尊重用户重命名。
         session.title = summarizeTitle(trimmedContent)
       }
 
       session.updatedAt = now
       this.isResponding = true
+      // 每次请求使用独立控制器，停止按钮只取消当前请求。
       responseAbortController = new AbortController()
 
       writeStoredSessions(this.sessions)
 
       let assistantMessage: ChatMessage | null = null
+      // 以下变量记录本次请求的临时结果，结束后一次性写回消息。
       let contentFallbackBuffer = ''
       let hasProviderReasoning = false
       let responseError = ''
       let responseSources: WebSearchSource[] = []
       let responseTruncated = false
       const ensureAssistantMessage = () => {
+        // 收到首个正文、思考或错误时才创建，避免等待阶段出现空白 AI 消息。
         if (!assistantMessage) {
           assistantMessage = {
             branchLabel: options.branchLabel,
@@ -1074,6 +1139,7 @@ export const useChatStore = defineStore('chat', {
       }
 
       const contextMessages =
+        // 编辑生成分支时不把被替换的旧分支继续发送给模型。
         branchSourceIndex >= 0 ? [...session.messages.slice(0, branchSourceIndex), userMessage] : session.messages
 
       const reply = await this.requestAssistantReply(contextMessages, {
@@ -1084,22 +1150,27 @@ export const useChatStore = defineStore('chat', {
         temperature: options.temperature,
         webSearch: options.webSearch,
         onError: (message) => {
+          // 错误消息也创建助手记录，刷新页面后仍可看到并重试。
           responseError = message
           ensureAssistantMessage().error = message
         },
         onFinish: (truncated) => {
+          // 是否截断由协议 finish_reason 决定，不通过文本猜测。
           responseTruncated = truncated
         },
         onSources: (sources) => {
+          // 保留本次来源用于最终收尾，同时尽早更新正在显示的消息。
           responseSources = sources
           const message = assistantMessage as ChatMessage | null
           if (message) message.sources = sources
         },
         onReasoning: (token) => {
+          // 专用 reasoning token 直接进入思考区。
           hasProviderReasoning = true
           const message = ensureAssistantMessage()
           const now = Date.now()
           if (!this.streamingReasoningStartedAt) {
+            // 首个思考 token 决定计时起点。
             this.streamingReasoningStartedAt = now
             message.reasoningStartedAt = now
           }
@@ -1110,6 +1181,7 @@ export const useChatStore = defineStore('chat', {
         onToken: (token) => {
           const message = ensureAssistantMessage()
           if (options.deepThinking && !hasProviderReasoning) {
+            // 没有独立思考字段时，暂存 content 并按“最终回答”标记拆分。
             const now = Date.now()
             contentFallbackBuffer += token
 
@@ -1123,6 +1195,7 @@ export const useChatStore = defineStore('chat', {
             const hasDirectAnswer = directAnswer !== contentFallbackBuffer.trimStart()
 
             if (hasDirectAnswer) {
+              // content 从最终回答开始时，清除之前推测出的思考状态。
               this.streamingReasoningContent = ''
               this.streamingReasoningEndedAt = 0
               this.streamingReasoningStartedAt = 0
@@ -1132,6 +1205,7 @@ export const useChatStore = defineStore('chat', {
               message.reasoningStartedAt = undefined
               message.content = directAnswer
             } else if (fallbackSplit) {
+              // 识别到分隔标记后，开始同步显示正式答案。
               if (!this.streamingReasoningEndedAt) {
                 this.streamingReasoningEndedAt = now
                 message.reasoningEndedAt = now
@@ -1141,6 +1215,7 @@ export const useChatStore = defineStore('chat', {
               message.reasoningContent = fallbackSplit.reasoning
               message.content = fallbackSplit.answer
             } else {
+              // 分隔标记出现前，累计文本暂时显示在思考区域。
               this.streamingReasoningContent = contentFallbackBuffer
               this.streamingMessageContent = ''
               message.reasoningContent = contentFallbackBuffer
@@ -1152,6 +1227,7 @@ export const useChatStore = defineStore('chat', {
           }
 
           if (this.streamingReasoningContent && !this.streamingReasoningEndedAt) {
+            // 专用 reasoning 结束后收到正文，记录结束时间。
             this.streamingReasoningEndedAt = Date.now()
             message.reasoningEndedAt = this.streamingReasoningEndedAt
           }
@@ -1162,10 +1238,12 @@ export const useChatStore = defineStore('chat', {
         systemPrompt: options.systemPrompt,
       })
       responseAbortController = null
+      // stopResponding 已将 isResponding 设为 false 时，不再执行正常收尾。
       if (!this.isResponding) return
 
       const completedAssistantMessage = assistantMessage as ChatMessage | null
       if (completedAssistantMessage) {
+        // 流式阶段偏向即时展示，结束阶段再统一修正最终数据结构。
         if (this.streamingReasoningContent && !this.streamingReasoningEndedAt) {
           this.streamingReasoningEndedAt = Date.now()
         }
@@ -1191,6 +1269,7 @@ export const useChatStore = defineStore('chat', {
           reasoningStartedAt = completedAssistantMessage.createdAt
           reasoningEndedAt = Date.now()
         } else if (options.deepThinking && !hasProviderReasoning && contentFallbackBuffer) {
+          // 无法拆分时优先保证用户能看到返回文本。
           finalContent = contentFallbackBuffer
           finalReasoning = ''
           reasoningStartedAt = 0
@@ -1202,6 +1281,7 @@ export const useChatStore = defineStore('chat', {
           : null
 
         if (reasoningAnswerSplit) {
+          // 对只写入 reasoning 的兼容响应尝试挽救其中的最终答案。
           finalContent = reasoningAnswerSplit.answer
           finalReasoning = reasoningAnswerSplit.reasoning
           reasoningStartedAt = reasoningStartedAt || completedAssistantMessage.createdAt
@@ -1218,6 +1298,7 @@ export const useChatStore = defineStore('chat', {
         completedAssistantMessage.sources = responseSources.length ? responseSources : undefined
         completedAssistantMessage.truncated = responseTruncated || undefined
       } else if (reply) {
+        // 非流式响应可能没有调用 onToken，此时从 reply 创建完整消息。
         const fallbackSplit = options.deepThinking ? splitReasoningFromAnswer(reply) : null
         assistantMessage = {
           branchLabel: options.branchLabel,
@@ -1236,6 +1317,7 @@ export const useChatStore = defineStore('chat', {
       }
       session.updatedAt = Date.now()
       this.isResponding = false
+      // 请求结束后清空 Store 临时字段，消息对象已持有最终状态。
       this.streamingMessageContent = ''
       this.streamingMessageId = ''
       this.streamingReasoningContent = ''
@@ -1244,6 +1326,7 @@ export const useChatStore = defineStore('chat', {
       writeStoredSessions(this.sessions)
     },
     stopResponding() {
+      // 先取消网络，再清理所有流式展示状态。
       responseAbortController?.abort()
       responseAbortController = null
 
@@ -1255,6 +1338,7 @@ export const useChatStore = defineStore('chat', {
       this.streamingReasoningStartedAt = 0
     },
     async requestAssistantReply(messages: ChatMessage[], options: RequestAssistantOptions = {}) {
+      // 该方法只负责 API 协议与工具调用，通过回调把增量状态交给上层。
       if (!BIGMODEL_API_KEY) {
         const message = '还没有配置 BigModel API Key。请在 src/stores/chat.ts 顶部的 BIGMODEL_API_KEY 里填入你的 Key。'
         await options.onError?.(message)
@@ -1263,9 +1347,11 @@ export const useChatStore = defineStore('chat', {
 
       const storedWebSearch = readStoredWebSearchEnabled()
       const storedAgentMode = readStoredAgentModeEnabled()
+      // 显式发送选项和已持久化工具状态取并集。
       const webSearchEnabled = Boolean(options.webSearch) || storedWebSearch
       const agentModeEnabled = Boolean(options.agentMode) || storedAgentMode
       const systemPrompt = [
+        // 各模式只通过系统提示和工具声明叠加，不改变会话消息本身。
         options.systemPrompt ?? SYSTEM_PROMPT,
         options.deepThinking ? DEEP_THINKING_PROMPT : '',
         webSearchEnabled ? WEB_SEARCH_PROMPT : '',
@@ -1274,6 +1360,7 @@ export const useChatStore = defineStore('chat', {
         .filter(Boolean)
         .join('\n')
       const apiMessages = buildApiMessages(messages, systemPrompt, options.contextClearedAt)
+      // maxTokens=0 表示交由估算函数根据上下文自适应。
       const maxTokens = options.maxTokens
         ? clamp(Math.round(options.maxTokens), 512, DEEP_THINKING_OUTPUT_TOKEN_LIMIT)
         : estimateMaxTokens(apiMessages, options.deepThinking)
@@ -1281,6 +1368,7 @@ export const useChatStore = defineStore('chat', {
         ? 1
         : clamp(Number(options.temperature), 0, 2)
       const tools = buildRequestTools(webSearchEnabled, agentModeEnabled)
+      // 请求体保持 OpenAI 兼容格式，同时附加供应商 thinking 配置。
       const requestBody: Record<string, unknown> = {
         model: BIGMODEL_MODEL,
         messages: apiMessages,
@@ -1296,10 +1384,12 @@ export const useChatStore = defineStore('chat', {
       }
 
       if (agentModeEnabled) {
+        // Agent 模式需要接收流式工具参数，普通问答无需开启。
         requestBody.tool_stream = true
       }
 
       if (import.meta.env.DEV) {
+        // 开发日志只输出开关和数值，不打印用户消息或 API Key。
         console.info('AI request options ' + JSON.stringify({
           agentMode: agentModeEnabled,
           deepThinking: Boolean(options.deepThinking),
@@ -1316,6 +1406,7 @@ export const useChatStore = defineStore('chat', {
       }
 
       try {
+        // 第一轮请求可能直接返回答案，也可能只返回 Agent 工具调用。
         const response = await fetch(BIGMODEL_API_URL, {
           method: 'POST',
           headers: {
@@ -1332,17 +1423,20 @@ export const useChatStore = defineStore('chat', {
         }
 
         const reply = await readStreamResponse(response, options.onToken, options.onReasoning, options.signal)
+        // 先上报第一轮的截断和来源信息。
         await options.onFinish?.(['length', 'max_tokens'].includes(reply.finishReason.toLowerCase()))
         if (reply.sources.length) {
           await options.onSources?.(reply.sources)
         }
         if (agentModeEnabled && reply.toolCalls.length) {
+          // 第一轮只决定工具调用；本地执行后把结果交回模型生成最终回答。
           const toolMessages = reply.toolCalls.map((toolCall) => ({
             role: 'tool',
             tool_call_id: toolCall.id,
             content: executeAgentTool(toolCall, messages),
           })) satisfies ApiMessage[]
           const followUpMessages = [
+            // 第二轮上下文包含模型的工具调用声明及每个工具的执行结果。
             ...apiMessages,
             {
               role: 'assistant',
@@ -1352,6 +1446,7 @@ export const useChatStore = defineStore('chat', {
             ...toolMessages,
           ] satisfies ApiMessage[]
           const followUpRequestBody: Record<string, unknown> = {
+            // 禁止第二轮再次调用工具，避免前端进入无限工具循环。
             ...requestBody,
             messages: followUpMessages,
             tool_choice: 'none',
@@ -1382,10 +1477,12 @@ export const useChatStore = defineStore('chat', {
 
         if (reply.text) return reply.text
 
+        // 无文本且无可执行工具时视为协议异常。
         console.warn('GLM response without readable content')
         await options.onError?.('接口没有返回可读取的内容，请稍后重试')
         return ''
       } catch (error) {
+        // 用户主动停止不显示错误提示。
         if (error instanceof DOMException && error.name === 'AbortError') return ''
         console.error(error)
         const message = error instanceof Error ? error.message : String(error)

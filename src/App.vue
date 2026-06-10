@@ -1,5 +1,7 @@
 <template>
+  <!-- 应用外壳：侧边栏、主对话区和全局弹窗都在这一层组装。 -->
   <main class="chat-shell" :class="{ 'sidebar-collapsed': isSidebarCollapsed, 'theme-dark': themeMode === 'dark' }">
+    <!-- 左侧导航只展示数据并上抛操作，具体状态修改由 useChatApp 完成。 -->
     <ChatSidebar
       :action-menu-style="actionMenuStyle"
       :active-project="activeProject"
@@ -47,7 +49,9 @@
       @click="isSidebarCollapsed = true"
     />
 
+    <!-- 主内容区按“项目首页 / 空会话 / 已有消息”三种状态切换。 -->
     <section class="conversation">
+      <!-- 顶栏始终存在，负责当前会话工具和移动端侧栏入口。 -->
       <ConversationHeader
         :context-cleared="Boolean(activeSession?.contextClearedAt)"
         :has-messages="Boolean(activeSession?.messages.length)"
@@ -64,6 +68,7 @@
         @open-sidebar="isSidebarCollapsed = false"
       />
 
+      <!-- 项目首页展示项目说明、首条消息输入和项目内历史会话。 -->
       <ProjectHome
         v-if="isProjectMode && isProjectHome"
         :action-menu-style="actionMenuStyle"
@@ -99,6 +104,7 @@
         @update-draft="draft = $event"
       />
 
+      <!-- 新建但尚未发送消息时使用居中的欢迎输入视图。 -->
       <WelcomeView
         v-else-if="isFreshSession"
         :active-project="activeProject"
@@ -125,6 +131,7 @@
       />
 
       <template v-else>
+        <!-- 已有消息时渲染消息流和底部固定输入区。 -->
         <MessageThread
           :active-message-id="activeMessageId"
           :editing-draft="editingDraft"
@@ -170,6 +177,7 @@
           @update-editing-draft="editingDraft = $event"
         />
 
+        <!-- 常用模板和输入器在滚动消息区之外，避免随消息一起滚动。 -->
         <div class="composer-panel">
           <PromptTemplateBar
             id-prefix="panel"
@@ -199,6 +207,7 @@
       </template>
     </section>
 
+    <!-- 以下弹窗全部由应用根节点托管，避免受内容区层级和 overflow 影响。 -->
     <SearchDialogs
       :global-open="isSearchOpen"
       :global-query="searchText"
@@ -213,12 +222,14 @@
       @update-global-query="searchText = $event"
       @update-session-query="sessionSearchText = $event"
     />
+    <!-- 清空上下文只影响后续 API 请求，不删除页面历史。 -->
     <ContextClearDialog
       :open="isContextClearOpen"
       :title="activeSession?.title ?? '当前对话'"
       @close="closeContextClearDialog"
       @confirm="clearCurrentContext"
     />
+    <!-- 收藏、模板、导出和设置均采用受控组件模式。 -->
     <FavoritesDialog
       :favorites="favoriteResults"
       :filtered-favorites="filteredFavoriteResults"
@@ -294,6 +305,7 @@
       @trash="trashManagedConversation"
       @update-mode="conversationManagerMode = $event"
     />
+    <!-- 项目和会话的创建、重命名、删除共用此确认弹窗。 -->
     <ActionDialog
       :dialog="actionDialog"
       @close="closeActionDialog"
@@ -322,6 +334,7 @@ import TemplateManagerDialog from '@/components/dialogs/TemplateManagerDialog.vu
 import { useChatApp } from '@/composables/useChatApp'
 import { useSpeechFeatures } from '@/composables/useSpeechFeatures'
 
+// App.vue 只负责页面组装；聊天业务和状态集中在 useChatApp 中。
 const {
   draft,
   messagesRef,
@@ -483,6 +496,7 @@ const {
   formatTime,
 } = useChatApp()
 
+// 语音依赖浏览器 API，单独组合以免继续扩大聊天编排层。
 const {
   isListening,
   speechPlaybackState,
@@ -499,6 +513,7 @@ const {
 })
 
 const sendWithVoiceStop = () => {
+  // 发送前停止识别，避免新的转写结果继续改动已提交的草稿。
   stopVoiceInput()
   send()
 }

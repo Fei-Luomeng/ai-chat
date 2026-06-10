@@ -1,4 +1,5 @@
 <template>
+  <!-- 设置弹窗编辑的是草稿副本，只有保存后才更新应用状态。 -->
   <div v-if="open" class="settings-overlay" @click="emit('close')">
     <section class="settings-dialog" @click.stop>
       <header>
@@ -6,6 +7,7 @@
         <button type="button" aria-label="关闭设置" @click="emit('close')"><Close :size="18" /></button>
       </header>
       <div class="settings-body">
+        <!-- 账户和外观设置。 -->
         <div class="avatar-setting">
           <span class="profile-avatar large" :style="avatarImage ? { backgroundImage: `url(${avatarImage})` } : undefined">
             <template v-if="!avatarImage">{{ avatarText }}</template>
@@ -27,6 +29,7 @@
             <Moon :size="15" /><span>黑色</span>
           </button>
         </div>
+        <!-- 模型参数和新会话默认工具状态。 -->
         <section class="model-settings-panel">
           <h3>AI 参数</h3>
           <label>
@@ -67,6 +70,7 @@
             </label>
           </div>
         </section>
+        <!-- 自定义指令和记忆会拼接进系统提示词。 -->
         <section class="personalization-panel">
           <h3>个性化</h3>
           <label>
@@ -94,6 +98,7 @@
                 <span>添加</span>
               </button>
             </div>
+            <!-- 记忆仅保存在当前浏览器的 localStorage。 -->
             <div v-if="memories.length" class="memory-list">
               <div v-for="memory in memories" :key="memory.id" class="memory-item">
                 <span>{{ memory.content }}</span>
@@ -119,6 +124,7 @@ import { Close, Moon, Plus, Sunny } from '@element-plus/icons-vue'
 
 import type { MemoryItem, ModelSettings } from '@/types/ui'
 
+// 所有字段都是受控值，关闭弹窗时父级会丢弃未保存草稿。
 defineProps<{
   avatarImage: string
   avatarText: string
@@ -145,6 +151,7 @@ const emit = defineEmits<{
 }>()
 
 const updateModel = (settings: ModelSettings, key: keyof ModelSettings, value: boolean | number) => {
+  // 通过新对象更新，确保父级 ref 能稳定触发响应式更新。
   emit('updateModelSettings', { ...settings, [key]: value })
 }
 </script>

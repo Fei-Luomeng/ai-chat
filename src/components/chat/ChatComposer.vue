@@ -1,8 +1,10 @@
 <template>
+  <!-- 同一输入器复用于欢迎页、普通会话和项目首页。 -->
   <div
     v-bind="$attrs"
     :class="variant === 'project' ? 'project-hero-composer' : 'composer'"
   >
+    <!-- Enter 直接发送；多行输入可由输入法或组合键完成。 -->
     <el-input
       :model-value="draft"
       type="textarea"
@@ -12,6 +14,7 @@
       @update:model-value="emit('updateDraft', String($event))"
       @keydown.enter.exact.prevent="emit('send')"
     />
+    <!-- 工具按钮的 aria-pressed 同时服务可访问性和发送参数兼容读取。 -->
     <div class="composer-tools" :class="{ 'project-tools': variant === 'project' }">
       <button
         type="button"
@@ -57,6 +60,7 @@
         <i v-if="isListening" class="voice-pulse" />
       </button>
     </div>
+    <!-- 项目版和普通版沿用各自视觉体系，但发送/停止事件保持一致。 -->
     <button
       v-if="variant === 'project' && responding"
       type="button"
@@ -92,11 +96,13 @@
 <script setup lang="ts">
 import { ChatDotRound, Microphone, Promotion, Search, Setting } from '@element-plus/icons-vue'
 
+// 根节点需要接收父组件传入的 class，因此关闭 Vue 默认的 attrs 继承位置。
 defineOptions({
   inheritAttrs: false,
 })
 
 withDefaults(
+  // variant 只控制布局样式，工具状态仍完全由父组件管理。
   defineProps<{
     agentMode: boolean
     deepThinking: boolean

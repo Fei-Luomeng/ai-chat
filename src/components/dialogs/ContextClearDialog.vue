@@ -1,4 +1,5 @@
 <template>
+  <!-- 清空上下文不会删除消息，只改变下一次请求的上下文起点。 -->
   <div v-if="open" class="confirm-overlay" @click.self="emit('close')">
     <section class="confirm-dialog" @click.stop>
       <header>
@@ -20,6 +21,7 @@
 <script setup lang="ts">
 import { Close } from '@element-plus/icons-vue'
 
+// 具体时间戳更新和持久化由父级确认事件处理。
 defineProps<{ open: boolean; title: string }>()
 const emit = defineEmits<{ close: []; confirm: [] }>()
 </script>

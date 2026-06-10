@@ -1,10 +1,12 @@
 <template>
+  <!-- 对话导出支持全部消息或手动选择消息。 -->
   <div v-if="open" class="confirm-overlay" @click.self="emit('close')">
     <section class="export-dialog" @click.stop>
       <header>
         <div><p>导出对话</p><h2>{{ title }}</h2></div>
         <button type="button" aria-label="关闭导出" @click="emit('close')"><Close :size="18" /></button>
       </header>
+      <!-- selectedIds 始终由父级维护，组件只负责选择交互。 -->
       <div class="export-body">
         <div class="export-mode">
           <button type="button" :class="{ active: mode === 'all' }" @click="emit('updateMode', 'all')">全部导出</button>
@@ -13,6 +15,7 @@
         <p class="export-summary">
           {{ mode === 'all' ? `将导出全部 ${messages.length} 条消息。` : `将导出已选择的 ${selectedTotal} 条消息。` }}
         </p>
+        <!-- 仅在选择模式下渲染消息清单，避免全部导出时产生冗余内容。 -->
         <div v-if="mode === 'selected'" class="export-message-list">
           <button
             v-for="message in messages"
@@ -43,6 +46,7 @@ import { Close } from '@element-plus/icons-vue'
 
 import type { ChatMessage } from '@/stores/chat'
 
+// getPreview 复用应用层的纯文本提取，保证思考内容不会混入导出摘要。
 defineProps<{
   getPreview: (message: ChatMessage) => string
   messages: ChatMessage[]
