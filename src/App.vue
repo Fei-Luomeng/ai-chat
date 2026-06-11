@@ -1,6 +1,16 @@
 <template>
+  <!--
+    Vue 3 模板会自动解包 ref：
+    script 中的 isSidebarCollapsed 实际是 Ref<boolean>，
+    但模板里直接使用 isSidebarCollapsed，不需要写 isSidebarCollapsed.value。
+  -->
   <!-- 应用外壳：侧边栏、主对话区和全局弹窗都在这一层组装。 -->
   <main class="chat-shell" :class="{ 'sidebar-collapsed': isSidebarCollapsed, 'theme-dark': themeMode === 'dark' }">
+    <!--
+      冒号 : 是 v-bind: 的缩写，表示把 JavaScript 表达式传给子组件。
+      例如 :projects="projects" 传递的是数组；不加冒号则会传递普通字符串。
+      @ 是 v-on: 的缩写，子组件 emit 对应事件后，父组件在这里接收。
+    -->
     <!-- 左侧导航只展示数据并上抛操作，具体状态修改由 useChatApp 完成。 -->
     <ChatSidebar
       :action-menu-style="actionMenuStyle"
@@ -49,7 +59,11 @@
       @click="isSidebarCollapsed = true"
     />
 
-    <!-- 主内容区按“项目首页 / 空会话 / 已有消息”三种状态切换。 -->
+    <!--
+      主内容区按“项目首页 / 空会话 / 已有消息”三种状态切换。
+      v-if、v-else-if、v-else 必须相邻，Vue 每次只会挂载其中一个分支。
+      被切走的组件会卸载，因此组件里的 onBeforeUnmount 也会执行。
+    -->
     <section class="conversation">
       <!-- 顶栏始终存在，负责当前会话工具和移动端侧栏入口。 -->
       <ConversationHeader
@@ -131,6 +145,7 @@
       />
 
       <template v-else>
+        <!-- template 本身不会生成真实 DOM，只用于包住一组需要共同判断的节点。 -->
         <!-- 已有消息时渲染消息流和底部固定输入区。 -->
         <MessageThread
           :active-message-id="activeMessageId"
@@ -176,6 +191,11 @@
           @toggle-speech="toggleMessageSpeech"
           @update-editing-draft="editingDraft = $event"
         />
+        <!--
+          $event 表示子组件 emit 时携带的参数。
+          messageAreaReady 发出 HTMLElement，父级把它保存到 messagesRef，
+          之后 useChatApp 才能控制消息区域的滚动位置。
+        -->
 
         <!-- 常用模板和输入器在滚动消息区之外，避免随消息一起滚动。 -->
         <div class="composer-panel">
@@ -244,6 +264,10 @@
       @update-scope="favoriteScope = $event"
       @update-search-text="favoriteSearchText = $event"
     />
+    <!--
+      这些 update-* 事件等价于自定义 v-model：
+      子组件不直接修改 prop，而是把新值交回父组件保存。
+    -->
     <TemplateManagerDialog
       :draft-label="draftTemplateLabel"
       :draft-prompt="draftTemplatePrompt"
@@ -312,6 +336,11 @@
       @confirm="confirmActionDialog"
       @update-value="actionDialog && (actionDialog.value = $event)"
     />
+    <!--
+      上面的 && 是短路判断：只有 actionDialog 不是 null 时才修改 value。
+      模板已经自动解包外层 ref，所以 actionDialog.value 指的是弹窗对象的 value 字段，
+      不是 Ref 自身的 .value。
+    -->
   </main>
 </template>
 
@@ -334,6 +363,9 @@ import TemplateManagerDialog from '@/components/dialogs/TemplateManagerDialog.vu
 import { useChatApp } from '@/composables/useChatApp'
 import { useSpeechFeatures } from '@/composables/useSpeechFeatures'
 
+// <script setup> 会在每个组件实例创建时执行一次。
+// 顶层导入的组件会自动注册，顶层变量和函数会自动提供给模板，
+// 因此不需要 Vue 2 的 components、data、computed、methods 配置，也不通过 this 访问。
 // App.vue 只负责页面组装；聊天业务和状态集中在 useChatApp 中。
 const {
   draft,
@@ -495,6 +527,10 @@ const {
   removeDraftMemory,
   formatTime,
 } = useChatApp()
+// 这里解构出来的大多是 ref/computed。脚本中修改 ref 要使用 .value，
+// 模板会自动解包，所以模板里可以直接写 draft、isSettingsOpen 等名称。
+// composable 返回的是 Ref 对象本身，解构不会丢失响应式；
+// 需要注意的是，如果解构的是 reactive 普通对象字段，才可能需要 toRefs 保持响应式。
 
 // 语音依赖浏览器 API，单独组合以免继续扩大聊天编排层。
 const {
@@ -508,6 +544,8 @@ const {
   toggleVoiceInput,
   voiceInputSupported,
 } = useSpeechFeatures({
+  // 直接把 draft 这个 Ref 传入，语音模块修改 draft.value 后，
+  // App.vue 和所有使用同一 draft 的输入组件都会立即得到新值。
   draft,
   getMessageText: getAnswerContent,
 })
@@ -515,6 +553,7 @@ const {
 const sendWithVoiceStop = () => {
   // 发送前停止识别，避免新的转写结果继续改动已提交的草稿。
   stopVoiceInput()
+  // send 是 async 函数，但点击事件不需要等待其返回值，因此这里直接调用。
   send()
 }
 

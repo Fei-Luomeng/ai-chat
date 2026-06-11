@@ -96,11 +96,15 @@
 <script setup lang="ts">
 import { ChatDotRound, Microphone, Promotion, Search, Setting } from '@element-plus/icons-vue'
 
+// defineOptions 是 <script setup> 中声明组件选项的方式，可理解为 Vue 2
+// export default 对象里 inheritAttrs 等少数组件配置的替代入口。
 // 根节点需要接收父组件传入的 class，因此关闭 Vue 默认的 attrs 继承位置。
 defineOptions({
   inheritAttrs: false,
 })
 
+// defineProps/defineEmits 是编译宏，不需要从 vue 导入。
+// withDefaults 为可选 prop 提供默认值，对应 Vue 2 props 中的 default。
 withDefaults(
   // variant 只控制布局样式，工具状态仍完全由父组件管理。
   defineProps<{
@@ -130,4 +134,6 @@ const emit = defineEmits<{
   toggleWebSearch: []
   updateDraft: [value: string]
 }>()
+// updateDraft 是受控输入事件：父组件收到值后更新自己的 draft。
+// 这样子组件不会直接修改 prop，也可以在多个位置复用同一个输入器。
 </script>

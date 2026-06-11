@@ -18,6 +18,7 @@ interface SendOptions {
 
 interface ProjectManagementOptions {
   // 导航状态由外层创建并注入，此模块直接修改这些 Ref。
+  // 这种“状态 + 回调注入”让模块不需要 import useChatApp，也避免模块之间循环依赖。
   activeProject: Ref<string>
   activeProjectSessionId: Ref<string>
   chatSessions: ChatSession[]
@@ -46,6 +47,7 @@ interface ProjectManagementOptions {
 
 export const useProjectManagement = (options: ProjectManagementOptions) => {
   // 此 composable 只维护导航和项目 CRUD，实际 AI 请求由外层注入。
+  // projects 没有复制数组，只是给同一个 Ref 起了一个更短的局部名称。
   const projects = options.projects
   // actionMenuStyle 使用 fixed 坐标；actionDialog 保存当前待确认操作。
   const actionMenuStyle = ref<Record<string, string>>({})
@@ -53,6 +55,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
 
   const findProjectSession = (sessionId: string) => {
     // 项目会话按项目名分组，操作单条会话时需要先反查所属项目。
+    // projectSessions 的结构是 Record<项目名, 会话数组>，所以需要遍历每个项目查找。
     for (const projectName of Object.keys(options.projectSessions.value)) {
       const session = options.projectSessions.value[projectName]?.find((item) => item.id === sessionId)
       if (session) return { projectName, session }
@@ -71,6 +74,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     options.projectSessions.value = {
       // 创建新对象确保依赖整个映射的 computed/watch 能被触发。
       ...options.projectSessions.value,
+      // 计算属性名：[projectName] 会把变量值作为对象键，而不是创建名为 projectName 的固定字段。
       [projectName]: [session, ...(options.projectSessions.value[projectName] ?? [])],
     }
     options.activeProjectSessionId.value = session.id
@@ -86,6 +90,8 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     options.activeProject.value = ''
     options.activeProjectSessionId.value = ''
     options.isProjectHome.value = false
+    // pending 状态只负责显示空白欢迎页，不马上向 sessions 插入空会话，
+    // 避免用户连续点击“新建对话”产生大量没有消息的记录。
     options.isPendingNewSession.value = true
     options.isPendingProjectSession.value = false
     options.openActionMenu.value = ''
@@ -154,6 +160,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
       return
     }
     options.openActionMenu.value = menuId
+    // currentTarget 是绑定事件的按钮；target 可能是按钮内部的图标。
     const rect = (event?.currentTarget as HTMLElement | undefined)?.getBoundingClientRect()
     if (rect) {
       // 菜单挂在根节点上，用触发按钮的视口坐标定位。
@@ -217,6 +224,8 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     const dialog = actionDialog.value
     if (!dialog) return
 
+    // 先判断 type 后，TypeScript 会把 dialog 缩小到对应的联合成员，
+    // 因此 rename 分支可以安全读取 projectName，session 分支可以读取 sessionId。
     if (dialog.type === 'create-project') {
       const projectName = dialog.value.trim()
       if (projectName) {
@@ -243,6 +252,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
           [nextName]: options.projectDescriptions.value[dialog.projectName] ?? '',
         }
         // 项目名同时是两个映射的键，重命名必须迁移会话和项目说明。
+        // delete 删除的是对象中的旧键，不是删除 Ref 本身。
         delete options.projectSessions.value[dialog.projectName]
         delete options.projectDescriptions.value[dialog.projectName]
         if (options.activeProject.value === dialog.projectName) options.activeProject.value = nextName

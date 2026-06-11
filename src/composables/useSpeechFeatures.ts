@@ -45,6 +45,7 @@ interface SpeechRecognitionLike {
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 
 type SpeechWindow = Window & {
+  // 交叉类型表示“普通 Window 再额外拥有这两个可选字段”。
   SpeechRecognition?: SpeechRecognitionConstructor
   webkitSpeechRecognition?: SpeechRecognitionConstructor
 }
@@ -76,6 +77,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
   const speechPlaybackState = ref<SpeechPlaybackState>('idle')
   const spokenMessageId = ref('')
   const isListening = ref(false)
+  // 浏览器能力也保存为 ref，让模板可以像使用普通状态一样进行 v-if 判断。
   const speechSynthesisSupported = ref(
     typeof window !== 'undefined' &&
       'speechSynthesis' in window &&
@@ -89,6 +91,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
       ),
   )
 
+  // 这些变量不参与模板渲染，所以不需要 ref；普通 let 足够保存浏览器 API 实例。
   let recognition: SpeechRecognitionLike | null = null
   // 开始识别时记录已有草稿，临时转写始终追加在该基线之后。
   let recognitionBaseDraft = ''
@@ -132,6 +135,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
     if (!content) return
 
     stopSpeaking()
+    // SpeechSynthesisUtterance 表示一次朗读任务，事件回调用于同步页面按钮状态。
     const utterance = new SpeechSynthesisUtterance(content)
     utterance.lang = 'zh-CN'
     utterance.rate = 1
@@ -190,6 +194,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
       return
     }
 
+    // ?? 只在左侧为 null/undefined 时使用右侧，优先选择标准 API，再兼容 webkit 前缀。
     const Recognition =
       (window as SpeechWindow).SpeechRecognition ??
       (window as SpeechWindow).webkitSpeechRecognition
@@ -211,6 +216,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
     }
     nextRecognition.onresult = (event) => {
       let transcript = ''
+      // 识别结果是类似数组的对象，每项的第 0 个候选通常是置信度最高的文本。
       for (let index = 0; index < event.results.length; index += 1) {
         transcript += event.results[index]?.[0]?.transcript ?? ''
       }
@@ -255,6 +261,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
   })
 
   watch(options.draft, (value, previousValue) => {
+    // 直接监听 Ref 时，回调参数依次是新值和旧值，不需要写 () => options.draft.value。
     // 用户清空输入框视为取消本轮语音输入。
     if (isListening.value && previousValue && !value) stopVoiceInput()
   })

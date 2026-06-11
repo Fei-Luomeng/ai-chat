@@ -43,6 +43,8 @@ export const useChatSearch = (options: ChatSearchOptions) => {
   const searchText = ref('')
   const sessionSearchText = ref('')
 
+  // computed 会自动收集回调中读取的响应式依赖。
+  // searchText 或 projectSessions 变化时重新计算，其他时间直接复用缓存结果。
   const searchResults = computed<SearchResult[]>(() => {
     const keyword = searchText.value.trim().toLowerCase()
     if (!keyword) return []
@@ -59,6 +61,7 @@ export const useChatSearch = (options: ChatSearchOptions) => {
       ),
     ]
 
+    // flatMap 允许每个会话返回多条结果，并自动把二维数组展开为一维数组。
     return allSessions.flatMap(({ projectName, session }) => {
       // 同一会话可以同时产生一个标题结果和多个消息结果。
       const results: SearchResult[] = []
@@ -107,6 +110,7 @@ export const useChatSearch = (options: ChatSearchOptions) => {
     return session.messages.flatMap((message) => {
       const content = options.getMessagePlainText(message)
       if (!content.toLowerCase().includes(keyword)) return []
+      // satisfies 只校验对象满足 SearchResult，不会把每个字段都强制扩大成接口中的宽类型。
       return {
         id: `current-${session.id}-${message.id}`,
         createdAt: message.createdAt,
@@ -124,6 +128,7 @@ export const useChatSearch = (options: ChatSearchOptions) => {
   const openSearch = async () => {
     // 弹窗挂载完成后再聚焦输入框。
     isSearchOpen.value = true
+    // v-if 依赖 isSearchOpen，必须等待下一次 DOM 更新后 input 才存在。
     await nextTick()
     document.querySelector<HTMLInputElement>('.search-dialog input')?.focus()
   }

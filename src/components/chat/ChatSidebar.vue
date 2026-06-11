@@ -18,6 +18,7 @@
         :aria-label="isMobileViewport ? '关闭侧边栏' : '收起侧边栏'"
         @click="emit('close')"
       >
+        <!-- component :is 用于动态选择组件，这里根据屏幕宽度切换图标。 -->
         <component :is="isMobileViewport ? Close : MoreFilled" :size="18" />
       </button>
     </div>
@@ -43,6 +44,10 @@
             </span>
             <span>新项目</span>
           </button>
+          <!--
+            v-for 渲染列表时必须提供稳定 key。
+            Vue 使用 key 判断节点是复用、移动还是重新创建，项目名在这里充当唯一标识。
+          -->
           <div v-for="project in projects" :key="project" class="nav-row-wrap">
             <!-- 选中样式只由 activeProject 决定，不代表已经选中项目内会话。 -->
             <button
@@ -54,6 +59,7 @@
               <component :is="project === activeProject ? FolderOpened : Folder" :size="16" />
               <span>{{ project }}</span>
             </button>
+            <!-- .stop 等价于调用 event.stopPropagation()，避免同时触发外层项目选择。 -->
             <button
               class="row-action"
               type="button"
@@ -200,6 +206,8 @@ import {
 import type { ChatMessage, ChatSession } from '@/stores/chat'
 import type { FavoriteResult } from '@/types/ui'
 
+// 没有把 defineProps 赋值给变量，是因为脚本函数中不需要读取这些 prop；
+// <script setup> 编译后仍会把它们直接暴露给模板使用。
 // 侧边栏保持无业务状态，所有导航和 CRUD 行为通过事件交给父组件。
 defineProps<{
   actionMenuStyle: Record<string, string>
@@ -222,6 +230,8 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
+  // TypeScript 元组描述每个事件的参数。
+  // [] 表示无参数，[sessionId: string] 表示必须传一个字符串。
   archiveSession: [sessionId: string]
   close: []
   createProject: []

@@ -27,6 +27,7 @@ interface SettingsOptions {
 
 export const useAppSettings = (options: SettingsOptions) => {
   // 已保存值和弹窗草稿分离，关闭弹窗即可无副作用地放弃修改。
+  // 对象使用展开语法复制，避免编辑 draft 时和已保存对象共享同一个引用。
   const initialSettings = { ...DEFAULT_MODEL_SETTINGS, ...(options.modelSettings ?? {}) }
   const modelSettings = ref<ModelSettings>(initialSettings)
   const draftModelSettings = ref<ModelSettings>({ ...initialSettings })
@@ -47,6 +48,7 @@ export const useAppSettings = (options: SettingsOptions) => {
   const avatarImage = ref(options.avatarImage ?? '')
   const themeMode = ref<'light' | 'dark'>(options.themeMode ?? 'light')
   const draftThemeMode = ref<'light' | 'dark'>(themeMode.value)
+  // 展示文字完全由 profileAvatar 派生，因此用 computed 而不是再维护一个 ref。
   const savedAvatarDisplay = computed(() => profileAvatar.value.trim().slice(0, 2).toUpperCase() || 'U')
 
   const persistToolState = () => {
@@ -107,6 +109,7 @@ export const useAppSettings = (options: SettingsOptions) => {
       temperature: Math.max(0, Math.min(2, Number(draftModelSettings.value.temperature) || 0)),
     }
     customInstructions.value = draftCustomInstructions.value.trim()
+    // map 创建清洗后的新对象，filter 再移除空内容；不会原地改动弹窗中的数组项。
     memories.value = draftMemories.value
       .map((item) => ({ ...item, content: item.content.trim() }))
       .filter((item) => item.content)

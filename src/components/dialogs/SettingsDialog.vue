@@ -124,6 +124,7 @@ import { Close, Moon, Plus, Sunny } from '@element-plus/icons-vue'
 
 import type { MemoryItem, ModelSettings } from '@/types/ui'
 
+// defineProps 返回只读数据；和 Vue 2 一样，子组件不应该直接修改 prop。
 // 所有字段都是受控值，关闭弹窗时父级会丢弃未保存草稿。
 defineProps<{
   avatarImage: string
@@ -149,6 +150,8 @@ const emit = defineEmits<{
   updateProfileName: [value: string]
   updateThemeMode: [value: 'light' | 'dark']
 }>()
+// 事件参数用元组写法声明，例如 [value: string] 表示该事件接收一个字符串。
+// TypeScript 会检查模板和脚本中 emit 的事件名、参数数量及参数类型。
 
 const updateModel = (settings: ModelSettings, key: keyof ModelSettings, value: boolean | number) => {
   // 通过新对象更新，确保父级 ref 能稳定触发响应式更新。

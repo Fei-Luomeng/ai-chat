@@ -37,6 +37,7 @@ const getTurnMessages = (messages: ChatMessage[], userIndex: number): ChatMessag
 
 export const useMessageBranches = (options: MessageBranchesOptions) => {
   // 所有版本仍按时间存在线性数组中，这里把同一轮问答重组为可切换的分支组。
+  // branchGroups 是派生状态，不单独保存；底层 messages 变化后会自动重新生成。
   const branchGroups = computed<BranchGroup[]>(() => {
     const messages = options.activeSession.value?.messages ?? []
     return messages.flatMap((sourceMessage, sourceIndex) => {
@@ -77,6 +78,7 @@ export const useMessageBranches = (options: MessageBranchesOptions) => {
 
   const visibleMessages = computed(() => {
     const messages = options.activeSession.value?.messages ?? []
+    // Set 用于快速判断消息是否已属于某个分支，避免每次都遍历所有分支消息。
     const groupedMessageIds = new Set(
       branchGroups.value.flatMap((group) =>
         group.variants.flatMap((variant) => variant.messages.map((message) => message.id)),
@@ -113,10 +115,13 @@ export const useMessageBranches = (options: MessageBranchesOptions) => {
     if (!session || !variant) return
 
     // 只记录选择结果，不重排或删除底层消息数组。
+    // 展开旧对象再创建新对象，让响应式系统更明确地识别 activeBranchIds 已变化。
+    // [sourceId] 是计算属性名，实际键名取自变量的值。
     session.activeBranchIds = { ...(session.activeBranchIds ?? {}), [sourceId]: variant.id }
     session.updatedAt = Date.now()
     if (options.isProjectMode.value) options.persistAppState()
     else options.persistChatSessions()
+    // void 表示这里主动忽略 Promise 返回值；滚动同步不需要阻塞当前点击事件。
     void nextTick(options.updateActiveMessageFromScroll)
   }
 

@@ -1,6 +1,8 @@
 import { nextTick, onBeforeUnmount, onMounted, type ComputedRef, type Ref } from 'vue'
 
 interface GlobalInteractionsOptions {
+  // Ref/ComputedRef 作为参数传入后仍保持响应式，并不是传入当前值的副本。
+  // 因此本 composable 修改 options.isSidebarCollapsed.value 时，App.vue 会同步更新。
   // 关闭函数由各功能模块提供，本模块只负责决定调用顺序。
   actionDialog: Ref<unknown | null>
   closeActionDialog: () => void
@@ -53,6 +55,8 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
   const focusDraftInput = async () => {
     // 页面最多只会有一个可见输入器，按视图优先级查询。
     if (hasOpenDialog()) return
+    // 修改响应式状态后 DOM 不会在当前同步语句中立刻更新。
+    // nextTick 等待 Vue 完成本轮渲染，之后才能查询刚显示出来的输入框。
     await nextTick()
     document
       .querySelector<HTMLTextAreaElement>(
@@ -148,6 +152,8 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
   }
 
   onMounted(() => {
+    // onMounted 在组件真实挂载到页面后运行，适合访问 window、document 和 DOM。
+    // composable 中调用生命周期钩子时，它会自动绑定到调用该 composable 的组件。
     // matchMedia 比 resize 更直接地表达断点变化。
     mobileMediaQuery = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`)
     mobileMediaQuery.addEventListener('change', handleViewportChange)
@@ -156,6 +162,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
   })
 
   onBeforeUnmount(() => {
+    // 注册全局事件后必须在卸载前移除，否则组件重新进入时会重复注册监听。
     // document 监听必须成对移除，避免热更新后重复触发。
     mobileMediaQuery?.removeEventListener('change', handleViewportChange)
     document.removeEventListener('pointerdown', handleGlobalPointerDown, true)

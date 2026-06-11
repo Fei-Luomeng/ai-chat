@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 
 export type MessageRole = 'user' | 'assistant'
+// 字符串字面量联合限制 role 只能取这两个值，比普通 string 更容易发现拼写错误。
 
 // 搜索来源会同时用于正文引用、悬浮预览和回答底部卡片。
 export interface WebSearchSource {
@@ -14,6 +15,7 @@ export interface WebSearchSource {
 }
 
 export interface ChatMessage {
+  // interface 描述消息对象必须/可以包含哪些字段，只参与类型检查，不会生成运行时代码。
   // branchOf 指向原始用户消息；没有该字段的消息属于主版本。
   branchLabel?: string
   branchOf?: string
@@ -66,6 +68,7 @@ interface SendOptions {
 }
 
 interface RequestAssistantOptions extends SendOptions {
+  // extends 复用 SendOptions 的字段，再增加请求过程专用的回调和取消信号。
   // 流式协议通过回调上报，上层决定写入普通会话还是项目会话。
   onError?: (message: string) => void | Promise<void>
   onFinish?: (truncated: boolean) => void | Promise<void>
@@ -184,6 +187,7 @@ export const splitReasoningFromAnswer = (content: string) => {
   return { answer, reasoning }
 }
 
+// 放在 Store 外部表示整个普通聊天请求共享一个“当前控制器”，停止时可以直接取消当前 fetch。
 let responseAbortController: AbortController | null = null
 
 const normalizeStoredMessages = (messages: ChatMessage[]) =>
@@ -201,6 +205,7 @@ const readStoredSessions = () => {
     const stored = window.localStorage.getItem(STORAGE_KEY)
     if (!stored) return []
 
+    // localStorage 永远只保存字符串，需要 JSON.parse 才能恢复数组和对象。
     const parsed = JSON.parse(stored)
     if (!Array.isArray(parsed)) return []
 
@@ -246,10 +251,12 @@ const readStoredAgentModeEnabled = () => {
 }
 
 const getTextFromContent = (content: unknown) => {
+  // unknown 比 any 更安全：使用前必须先通过 typeof/Array.isArray 判断真实类型。
   // 非流式文本用于最终结果，因此会 trim 首尾空白。
   if (typeof content === 'string') return content.trim()
   if (!Array.isArray(content)) return ''
 
+  // 数组形式常见于多模态兼容协议，这里只抽取其中可识别的文本字段。
   return content
     .map((item) => {
       if (typeof item === 'string') return item
@@ -352,10 +359,12 @@ const getWebSearchSourcesFromData = (data: unknown) => {
   if (!data || typeof data !== 'object') return []
 
   const candidates: unknown[] = []
+  // WeakSet 记录已经访问过的对象，防止响应中存在循环引用时递归永远不结束。
   const visited = new WeakSet<object>()
 
   // 不同兼容接口会把来源塞在响应、工具参数或 JSON 字符串中，因此递归收集。
   const collect = (value: unknown, key = '', depth = 0) => {
+    // depth 限制同时避免异常响应嵌套过深造成大量递归。
     if (depth > 12 || value === null || value === undefined) return
 
     if (typeof value === 'string') {
@@ -605,6 +614,7 @@ const calculateExpression = (expression: unknown) => {
     throw new Error('只支持数字、括号和 + - * / % 运算符。')
   }
 
+  // 只有通过上面的字符白名单后才执行表达式，避免任意 JavaScript 被注入。
   const value = Function(`"use strict"; return (${normalized})`)()
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new Error('表达式结果不是有效数字。')
@@ -685,6 +695,7 @@ const buildApiMessages = (messages: ChatMessage[], systemPrompt = SYSTEM_PROMPT,
   let totalChars = 0
 
   // 从最新消息向前截取，优先保证当前问题的上下文不被旧历史挤掉。
+  // reverse 后从最近消息开始累计；unshift 又把选中的消息恢复为正常时间顺序。
   for (const message of conversation.slice(-CONTEXT_MESSAGE_LIMIT).reverse()) {
     const content = message.content.trim()
     if (!content) continue
@@ -738,6 +749,7 @@ const createStreamTypewriter = (
   signal?: AbortSignal,
 ) => {
   // 网络分片大小不稳定；独立队列把展示节奏统一成逐字符更新。
+  // queue 保存网络已经收到、但还没有展示到页面的字符。
   let queue = ''
   let isRunning = false
   const drainResolvers: Array<() => void> = []
@@ -769,6 +781,7 @@ const createStreamTypewriter = (
     }
 
     if (queue) {
+      // requestAnimationFrame 在浏览器下一帧继续处理，避免一次 token 很长时瞬间全部显示。
       window.requestAnimationFrame(() => void pump())
       return
     }
@@ -842,9 +855,11 @@ const readStreamResponse = async (
     } satisfies StreamReply
   }
 
+  // ReadableStream reader 每次读取 Uint8Array 字节块，不保证一次就是一条完整 SSE 消息。
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   const typewriter = createStreamTypewriter(onToken, signal)
+  // buffer 保存上一个网络块末尾尚未形成完整行的部分。
   let buffer = ''
   let fullText = ''
   let rawText = ''
@@ -857,16 +872,19 @@ const readStreamResponse = async (
     const { done, value } = await reader.read()
     if (done) break
 
+    // stream: true 会保留跨字节块的半个 UTF-8 字符，避免中文被解码成乱码。
     const chunk = decoder.decode(value, { stream: true })
     rawText += chunk
     buffer += chunk
     const lines = buffer.split('\n')
+    // 最后一项可能是不完整行，先放回 buffer，等下一块数据到达后继续拼接。
     buffer = lines.pop() ?? ''
 
     for (const line of lines) {
       const trimmed = line.trim()
       if (!trimmed || !trimmed.startsWith('data:')) continue
 
+      // SSE 行格式为 data: {...}，slice(5) 去掉 data: 前缀。
       const payload = trimmed.slice(5).trim()
       if (payload === '[DONE]') {
         // 工具参数中也可能包含搜索结果，结束前再做一次来源提取。
@@ -933,11 +951,15 @@ const readStreamResponse = async (
 }
 
 export const useChatStore = defineStore('chat', {
+  // Pinia 的 Options Store 由 state、getters、actions 三部分组成。
+  // 组件调用 useChatStore() 后拿到的是同一个全局 store 实例。
   // Store 只管理普通会话；项目会话由 useChatApp 按项目名称分组维护。
   state: () => ({
+    // state 必须由函数返回，确保 Pinia 能为状态建立响应式代理。
     sessions: readStoredSessions() as ChatSession[],
     activeSessionId: '',
     isResponding: false,
+    // streaming* 是请求期间的临时展示状态；最终内容仍写回 sessions.messages。
     streamingMessageContent: '',
     streamingMessageId: '',
     streamingReasoningContent: '',
@@ -945,6 +967,7 @@ export const useChatStore = defineStore('chat', {
     streamingReasoningStartedAt: 0,
   }),
   getters: {
+    // getter 类似 computed，依赖的 state 不变时会复用缓存结果。
     // 当前会话失效时回退到第一个可见会话，避免归档或删除后展示空引用。
     activeSession: (state) =>
       state.sessions.find(
@@ -956,6 +979,7 @@ export const useChatStore = defineStore('chat', {
       state.sessions.find((session) => !session.archivedAt && !session.deletedAt),
   },
   actions: {
+    // action 中的 this 指向当前 store，可以直接读取 getter 或修改 state。
     createSession() {
       // 新会话插到列表首位，并立即成为普通模式的活动会话。
       const now = Date.now()
@@ -966,6 +990,7 @@ export const useChatStore = defineStore('chat', {
         updatedAt: now,
       }
 
+      // Pinia 允许直接修改响应式数组，不需要 Vuex mutation。
       this.sessions.unshift(session)
       this.activeSessionId = session.id
       writeStoredSessions(this.sessions)
@@ -1069,6 +1094,7 @@ export const useChatStore = defineStore('chat', {
       let session = this.activeSession
       const trimmedContent = content.trim()
 
+      // 防止空消息，以及同一普通会话中重复并发发送。
       if (!trimmedContent || this.isResponding) return
       if (!session) {
         this.createSession()
@@ -1105,10 +1131,12 @@ export const useChatStore = defineStore('chat', {
       session.updatedAt = now
       this.isResponding = true
       // 每次请求使用独立控制器，停止按钮只取消当前请求。
+      // signal 会传给 fetch；调用 abort 后 fetch 抛出 AbortError 并停止读取响应流。
       responseAbortController = new AbortController()
 
       writeStoredSessions(this.sessions)
 
+      // 首个 token 到达前保持 null，页面用 isWaitingForFirstToken 显示独立等待动画。
       let assistantMessage: ChatMessage | null = null
       // 以下变量记录本次请求的临时结果，结束后一次性写回消息。
       let contentFallbackBuffer = ''
@@ -1116,6 +1144,7 @@ export const useChatStore = defineStore('chat', {
       let responseError = ''
       let responseSources: WebSearchSource[] = []
       let responseTruncated = false
+      // 内部函数通过闭包访问本次 sendMessage 的 session、assistantMessage 和 options。
       const ensureAssistantMessage = () => {
         // 收到首个正文、思考或错误时才创建，避免等待阶段出现空白 AI 消息。
         if (!assistantMessage) {
@@ -1142,6 +1171,8 @@ export const useChatStore = defineStore('chat', {
         // 编辑生成分支时不把被替换的旧分支继续发送给模型。
         branchSourceIndex >= 0 ? [...session.messages.slice(0, branchSourceIndex), userMessage] : session.messages
 
+      // 请求层通过回调逐步上报 token；Store 再把增量内容写入响应式状态。
+      // 页面读取 streaming* 字段，所以每次 token 到达后都会触发对应区域更新。
       const reply = await this.requestAssistantReply(contextMessages, {
         agentMode: options.agentMode,
         contextClearedAt: session.contextClearedAt,
@@ -1164,6 +1195,7 @@ export const useChatStore = defineStore('chat', {
           const message = assistantMessage as ChatMessage | null
           if (message) message.sources = sources
         },
+        // 这些回调可能被请求层调用很多次，每次只处理一个增量片段。
         onReasoning: (token) => {
           // 专用 reasoning token 直接进入思考区。
           hasProviderReasoning = true
@@ -1350,6 +1382,7 @@ export const useChatStore = defineStore('chat', {
       // 显式发送选项和已持久化工具状态取并集。
       const webSearchEnabled = Boolean(options.webSearch) || storedWebSearch
       const agentModeEnabled = Boolean(options.agentMode) || storedAgentMode
+      // 先构造数组再 filter(Boolean)，可以方便地按开关加入或移除提示词片段。
       const systemPrompt = [
         // 各模式只通过系统提示和工具声明叠加，不改变会话消息本身。
         options.systemPrompt ?? SYSTEM_PROMPT,
@@ -1359,6 +1392,7 @@ export const useChatStore = defineStore('chat', {
       ]
         .filter(Boolean)
         .join('\n')
+      // 页面消息结构先转换成接口需要的 role/content 结构，同时执行上下文裁剪。
       const apiMessages = buildApiMessages(messages, systemPrompt, options.contextClearedAt)
       // maxTokens=0 表示交由估算函数根据上下文自适应。
       const maxTokens = options.maxTokens
@@ -1407,6 +1441,7 @@ export const useChatStore = defineStore('chat', {
 
       try {
         // 第一轮请求可能直接返回答案，也可能只返回 Agent 工具调用。
+        // fetch 在收到响应头后返回 Response；正文仍由 readStreamResponse 持续异步读取。
         const response = await fetch(BIGMODEL_API_URL, {
           method: 'POST',
           headers: {
@@ -1422,14 +1457,17 @@ export const useChatStore = defineStore('chat', {
           throw new Error(await readErrorResponse(response))
         }
 
+        // readStreamResponse 持续消费 SSE 响应，并在读取过程中多次调用 token 回调。
         const reply = await readStreamResponse(response, options.onToken, options.onReasoning, options.signal)
         // 先上报第一轮的截断和来源信息。
         await options.onFinish?.(['length', 'max_tokens'].includes(reply.finishReason.toLowerCase()))
         if (reply.sources.length) {
           await options.onSources?.(reply.sources)
         }
+        // Agent 是两轮协议：第一轮让模型决定工具，浏览器执行工具，第二轮让模型组织最终回答。
         if (agentModeEnabled && reply.toolCalls.length) {
           // 第一轮只决定工具调用；本地执行后把结果交回模型生成最终回答。
+          // satisfies 在这里检查数组满足 ApiMessage[]，同时保留对象字面量的精确推导。
           const toolMessages = reply.toolCalls.map((toolCall) => ({
             role: 'tool',
             tool_call_id: toolCall.id,

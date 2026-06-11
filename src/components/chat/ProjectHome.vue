@@ -7,6 +7,10 @@
         <FolderOpened :size="34" />
         <h1>{{ projectName }}</h1>
       </div>
+      <!--
+        原生 input 事件的 target 类型默认只是 EventTarget，
+        TypeScript 不知道它一定有 value，所以用 as HTMLTextAreaElement 缩小类型。
+      -->
       <textarea
         :value="description"
         class="project-description"
@@ -106,6 +110,8 @@ import PromptTemplateBar from '@/components/chat/PromptTemplateBar.vue'
 import type { ChatSession } from '@/stores/chat'
 import type { PromptTemplate } from '@/types/ui'
 
+// 项目首页采用受控组件设计：description、draft、sessions 都由父级传入，
+// 用户操作只通过 emit 上报。这样项目数据只有 useChatApp 一个修改入口。
 // 组件只负责项目首页展示，创建会话和持久化仍由父级完成。
 defineProps<{
   actionMenuStyle: Record<string, string>

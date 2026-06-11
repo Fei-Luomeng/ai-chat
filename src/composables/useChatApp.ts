@@ -21,8 +21,11 @@ import { usePromptTemplates } from '@/composables/usePromptTemplates'
 import { useReasoningDisplay } from '@/composables/useReasoningDisplay'
 import type { MemoryItem, ModelSettings, PromptTemplate } from '@/types/ui'
 
+// composable 是普通函数，不是组件实例；它通过闭包保存状态并返回给调用方。
+// 相比 Vue 2 mixin，状态来源和依赖都能从参数、返回值中明确看出来。
 // 应用级编排层：组合各功能 composable，并统一普通会话与项目会话的状态。
 export const useChatApp = () => {
+// 这些 interface 只在 TypeScript 编译阶段用于检查参数，打包后的浏览器代码里不存在。
 interface AppSendOptions {
   agentMode: boolean
   branchLabel?: string
@@ -35,6 +38,7 @@ interface AppSendOptions {
 }
 
 interface PersistedAppState {
+  // 可选字段 ? 用于兼容旧版本 localStorage：旧数据里可能还没有后来新增的设置。
   activeProject?: string
   activeProjectSessionId?: string
   avatarImage?: string
@@ -66,6 +70,7 @@ const normalizeMessages = (messages: ChatMessage[]) =>
   )
 
 const normalizeProjectSessions = (sessions: Record<string, ChatSession[]>) =>
+  // Object.entries 把对象转换为 [键, 值] 数组，处理后再由 Object.fromEntries 还原成对象。
   Object.fromEntries(
     Object.entries(sessions).map(([projectName, items]) => [
       projectName,
@@ -80,6 +85,7 @@ const readAppState = (): PersistedAppState => {
   try {
     if (!window.localStorage) return {}
     const stored = window.localStorage.getItem(APP_STORAGE_KEY)
+    // JSON.parse 只恢复普通对象，不会恢复 ref/computed；响应式会在下面重新创建。
     return stored ? JSON.parse(stored) : {}
   } catch {
     return {}
@@ -95,6 +101,8 @@ const readToolState = () => {
   }
 }
 
+// useChatStore() 获取 Pinia 中 id 为 chat 的共享 store。
+// 其他组件再次调用时会拿到同一个状态实例，而不是重新创建一份。
 const chatStore = useChatStore()
 const storedAppState = readAppState()
 const storedToolState = readToolState()
@@ -105,11 +113,14 @@ const storedMode =
     : 'chat'
 
 // 页面状态：包含导航位置、弹窗、编辑态和长对话渲染窗口。
+// ref 相当于把 Vue 2 data 中的单个字段变成独立响应式对象。
+// TypeScript 中读写用 draft.value，模板使用时会自动解包为 draft。
 const draft = ref('')
 const messagesRef = ref<HTMLElement | null>(null)
 const editingMessageId = ref('')
 const editingDraft = ref('')
 const isMobileViewport = ref(
+  // typeof window 防止代码在非浏览器环境执行时直接访问 window 报错。
   typeof window !== 'undefined' && window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`).matches,
 )
 const isSidebarCollapsed = ref(isMobileViewport.value)
@@ -142,9 +153,11 @@ const messageRenderLimit = ref(80)
 const highlightedMessageId = ref('')
 const hoveredNavigatorItem = ref<{ label: string; right: number; top: number } | null>(null)
 const openActionMenu = ref('')
+// Record<string, ChatSession[]> 表示键是项目名、值是该项目的会话数组。
 const projectSessions = ref<Record<string, ChatSession[]>>({})
 const projectDescriptions = ref<Record<string, string>>(storedAppState.projectDescriptions ?? {})
 const projects = ref<string[]>(storedAppState.projects ?? [])
+// AbortController 是请求控制器，不需要参与页面渲染，因此使用普通变量而不是 ref。
 let projectAbortController: AbortController | null = null
 let continuationAbortController: AbortController | null = null
 let liveTimer: number | undefined
@@ -183,6 +196,7 @@ const {
   toggleDeepThinking,
   toggleWebSearch,
 } = useAppSettings({
+  // 这里采用依赖注入：设置模块只接收需要的数据和回调，不直接依赖整个 useChatApp。
   avatarImage: storedAppState.avatarImage,
   closeMobileSidebar: () => closeMobileSidebar(),
   customInstructions: storedAppState.customInstructions,
@@ -208,6 +222,7 @@ const {
   restoreDefaultTemplates,
   savePromptTemplate,
 } = usePromptTemplates(draft, storedAppState.promptTemplates, createId)
+// draft Ref 被直接传给模板模块；应用模板时修改的是同一个输入框状态。
 
 // ===== Display labels and active session selection =====
 // 自动标题只用于侧边栏摘要，不会修改用户输入的原始消息。
@@ -241,6 +256,7 @@ const getNavigatorFullLabel = (content: string, index: number) => {
   return normalized || `对话 ${index + 1}`
 }
 
+// computed 与 Vue 2 computed 作用相同：依赖的 ref 变化后才重新计算，并缓存结果。
 const activeProjectSession = computed(() => {
   // 项目首页没有 activeProjectSessionId，因此这里允许返回 undefined。
   if (!activeProject.value || !activeProjectSessionId.value) return undefined
@@ -249,6 +265,7 @@ const activeProjectSession = computed(() => {
 
 // 项目模式下不回退到普通聊天，避免左侧选中项目、右侧却展示普通会话。
 const activeSession = computed(() =>
+  // computed 返回 ComputedRef，不能直接赋值；它的值完全由当前模式和底层会话推导。
   currentMode.value === 'project' ? activeProjectSession.value : chatStore.activeSession,
 )
 // 输入框只判断去除空白后是否有内容。
@@ -358,6 +375,8 @@ const managedConversations = computed(() => [
     sessions.map((session) => ({ projectName, session })),
   ),
 ])
+// 上面使用数组展开，把普通会话和各项目会话转换成同一种 { projectName, session } 结构，
+// 后面的归档/回收站代码就不需要分别写两套过滤逻辑。
 
 const archivedConversations = computed(() =>
   // 已进入回收站的会话不再同时出现在归档列表。
@@ -407,8 +426,10 @@ const hiddenMessageCount = computed(() =>
 
 const loadEarlierMessages = async () => {
   const element = messagesRef.value
+  // 先记住插入旧消息前的总高度。
   const previousHeight = element?.scrollHeight ?? 0
   messageRenderLimit.value += 80
+  // 等待新增消息真正渲染到 DOM，才能读取新的 scrollHeight。
   await nextTick()
   // 补入旧消息后抵消新增高度，让用户仍停留在原来的阅读位置。
   if (element) element.scrollTop += element.scrollHeight - previousHeight
@@ -446,6 +467,7 @@ const persistAppState = () => {
   }
 
   try {
+    // ref/computed 不能直接存入 localStorage，所以快照中只放 .value 取出的普通数据。
     window.localStorage?.setItem(APP_STORAGE_KEY, JSON.stringify(state))
   } catch {
     // Storage can be unavailable in restricted browser contexts.
@@ -515,6 +537,7 @@ const updateActiveMessageFromScroll = () => {
   if (!messagesRef.value) return
 
   // 只查询当前渲染窗口中的用户消息。
+  // querySelectorAll 返回 NodeList，Array.from 转成数组后才能方便使用 findLast。
   const rows = Array.from(messagesRef.value.querySelectorAll<HTMLElement>('[data-message-role="user"]'))
   if (!rows.length) {
     activeMessageId.value = ''
@@ -539,6 +562,7 @@ const jumpToMessage = async (messageId: string) => {
     )
   }
   await nextTick()
+  // CSS.escape 防止 id 中的特殊字符破坏属性选择器。
   const row = messagesRef.value?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
   if (!row) return
 
@@ -694,6 +718,7 @@ const isToolButtonPressed = (tool: string) => {
 }
 
 const getSendOptions = (): AppSendOptions => ({
+  // 用对象字面量统一生成一次发送所需的所有配置，避免普通会话和项目会话读取到不同设置。
   // DOM 检查兼容多个输入器实例，最终仍与响应式设置取并集。
   agentMode: isAgentMode.value || isToolButtonPressed('agent-mode'),
   deepThinking: isDeepThinking.value || isToolButtonPressed('deep-thinking'),
@@ -705,6 +730,7 @@ const getSendOptions = (): AppSendOptions => ({
     memories.value.length
       ? `用户明确保存的记忆：\n${memories.value.map((item) => `- ${item.content}`).join('\n')}`
       : '',
+  // filter(Boolean) 去掉空字符串，再用空行拼成最终系统提示词。
   ].filter(Boolean).join('\n\n'),
   temperature: modelSettings.value.temperature,
   webSearch: isWebSearch.value || isToolButtonPressed('web-search'),
@@ -821,6 +847,7 @@ const cloneMessageForBranch = (message: ChatMessage): ChatMessage => ({
   reasoningContent: message.reasoningContent,
   reasoningEndedAt: message.reasoningEndedAt,
   reasoningStartedAt: message.reasoningStartedAt,
+  // sources 是对象数组，需要连数组元素也复制；只写 [...message.sources] 仍会共享 source 对象。
   sources: message.sources?.map((source) => ({ ...source })),
   truncated: message.truncated,
   createdAt: message.createdAt,
@@ -1081,6 +1108,8 @@ watch(
   },
 )
 
+// watch 的第一个参数是“要监听什么”，第二个参数是变化后的处理函数。
+// 这里使用 getter，只监听当前会话消息数量，而不是深度监听整个会话对象。
 watch(
   () => activeSession.value?.id,
   () => {
@@ -1113,6 +1142,9 @@ watch(
   },
   { deep: true },
 )
+// deep: true 会继续追踪数组元素和对象内部字段。
+// 例如直接执行 session.title = '新标题' 时，外层 projectSessions Ref 没有被替换，
+// 但深度监听仍能发现内部字段变化并保存 localStorage。
 
 watch(
   isResponding,
@@ -1134,6 +1166,7 @@ watch(
       liveTimer = undefined
     }
   },
+  // immediate 让回调在注册时先执行一次，用当前状态完成计时器初始化。
   { immediate: true },
 )
 
@@ -1209,6 +1242,8 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
     // 分支重试只提交分叉点之前的上下文，避免旧版本回答影响新版本。
     branchSourceIndex >= 0 ? [...session.messages.slice(0, branchSourceIndex), userMessage] : session.messages
 
+  // 项目会话复用 Store 的底层请求方法，但通过回调把 token 写入项目自己的状态。
+  // 所以 requestAssistantReply 只负责网络协议，不关心数据最终属于哪一种会话。
   const reply = await chatStore.requestAssistantReply(contextMessages, {
     agentMode: sendOptions.agentMode,
     contextClearedAt: session.contextClearedAt,
@@ -1297,6 +1332,7 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
         projectStreamingReasoningEndedAt.value = Date.now()
         message.reasoningEndedAt = projectStreamingReasoningEndedAt.value
       }
+      // 流式缓存用于当前动画展示；请求完成后还会把最终结果固定到 message.content。
       projectStreamingMessageContent.value += token
       session.updatedAt = Date.now()
     },
@@ -1453,6 +1489,7 @@ const send = async () => {
   // 普通输入器统一入口，根据当前导航状态选择具体发送路径。
   if (!hasDraft.value) return
 
+  // 先保存字符串再清空输入框，否则后续异步代码读取 draft 时已经拿不到原内容。
   const content = draft.value
   const sendOptions = getSendOptions()
   draft.value = ''
@@ -1506,6 +1543,7 @@ const stopResponding = () => {
 
   chatStore.stopResponding()
   // AbortController 负责真正终止 fetch，状态重置本身不能停止网络读取。
+  // 可选链 ?. 表示控制器存在才调用 abort，不存在时什么也不做。
   projectAbortController?.abort()
   projectAbortController = null
   continuationAbortController?.abort()
@@ -1569,6 +1607,7 @@ const { focusDraftInput } = useGlobalInteractions({
 })
 
 onBeforeUnmount(() => {
+  // 对应 Vue 2 的 beforeDestroy，用于清理组件创建的计时器和副作用。
   // 请求由各自 AbortController 管理，这里只清理页面级计时器。
   if (liveTimer !== undefined) {
     window.clearInterval(liveTimer)
@@ -1585,6 +1624,8 @@ const formatTime = (timestamp: number) =>
   }).format(timestamp)
 
   // App.vue 只消费这个公开接口，内部辅助状态不向模板泄漏。
+  // composable 没有固定返回格式；这里只返回 App.vue 真正需要的公开状态和方法。
+  // 没有返回的局部函数仍被闭包保留，但模板和其他模块无法直接访问。
   return {
     // 设置和输入草稿
     addDraftMemory,

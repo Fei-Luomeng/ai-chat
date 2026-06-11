@@ -46,6 +46,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
   const exportMode = ref<'all' | 'selected'>('all')
   const selectedExportMessageIds = ref<string[]>([])
   const exportableMessages = computed(() => options.activeSession.value?.messages ?? [])
+  // selectedExportMessages 不重复保存数据，只根据消息列表和 id 选择实时派生。
   const selectedExportMessages = computed(() =>
     exportableMessages.value.filter((message) => selectedExportMessageIds.value.includes(message.id)),
   )
@@ -98,6 +99,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
       '',
       exportMode.value === 'selected' ? `导出范围：已选择 ${messages.length} 条消息` : '导出范围：全部对话',
       '',
+      // 展开运算符把每条消息生成的字符串数组平铺到最终 lines 数组中。
       ...messages.flatMap((message, index) => {
         const branchLabel = getMessageBranchLabel(message, index, messages)
         return [
@@ -109,6 +111,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
       }),
     ]
     // Object URL 只在本次下载期间存在，触发后立即释放。
+    // Blob 把内存中的字符串包装成浏览器可下载的文件内容。
     const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -129,6 +132,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
     let currentBranchLabel = ''
     let currentContent: string[] = []
 
+    // 闭包会持续访问 currentRole/currentContent 的最新值，用来提交当前正在解析的消息。
     const flushMessage = () => {
       // 遇到下一条角色标题时，把之前积累的正文提交为一条消息。
       if (!currentRole) return
@@ -170,6 +174,7 @@ export const useConversationTransfer = (options: ConversationTransferOptions) =>
       return
     }
 
+    // File.text() 异步读取用户选择的本地文件，不需要自己创建 FileReader。
     const parsed = parseImportedMarkdown(await file.text())
     if (!parsed.messages.length) {
       ElMessage.warning('没有识别到可导入的消息')

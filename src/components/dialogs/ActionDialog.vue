@@ -1,6 +1,7 @@
 <template>
   <!-- 项目和会话的通用创建、重命名、删除确认框。 -->
   <div v-if="dialog" class="confirm-overlay" @click="emit('close')">
+    <!-- 点击遮罩关闭；点击内容区使用 .stop 阻止事件冒泡到遮罩。 -->
     <section class="confirm-dialog" @click.stop>
       <header>
         <h2>{{ getTitle(dialog) }}</h2>
@@ -37,6 +38,8 @@ import { Close } from '@element-plus/icons-vue'
 
 import type { ActionDialogState } from '@/types/ui'
 
+// ActionDialogState 是判别联合类型，dialog.type 是判别字段。
+// 判断 type 后，TypeScript 会自动知道当前分支还具备哪些字段。
 // dialog 为 null 时组件完全不渲染，输入值由父级状态持有。
 defineProps<{ dialog: ActionDialogState | null }>()
 const emit = defineEmits<{ close: []; confirm: []; updateValue: [value: string] }>()

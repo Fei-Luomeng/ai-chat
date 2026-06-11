@@ -304,6 +304,8 @@ interface CitationPreview {
   top: number
 }
 
+// 保存为 props 变量是因为脚本函数中需要读取属性；模板中则可以直接写属性名。
+// defineProps 返回的是响应式只读对象，父组件更新后 props 会自动得到新值。
 // 父级提供消息业务函数，本组件只处理消息列表中的局部 DOM 交互。
 const props = defineProps<{
   activeMessageId: string
@@ -353,6 +355,8 @@ const emit = defineEmits<{
   updateEditingDraft: [value: string]
 }>()
 
+// 模板中的 ref="messagesElement" 挂载后会把真实 DOM 元素写入这个 ref。
+// 初次执行 setup 时元素还不存在，所以类型必须包含 null。
 const messagesElement = ref<HTMLElement | null>(null)
 // 引用预览和来源高亮属于短暂 UI 状态，不写入会话数据。
 const citationPreview = ref<CitationPreview | null>(null)
@@ -461,6 +465,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  // 普通局部变量不会被 Vue 自动清理，其中保存的计时器仍需要手动取消。
   if (sourceHighlightTimer !== undefined) window.clearTimeout(sourceHighlightTimer)
   highlightedSourceCard?.classList.remove('source-card-highlight')
 })
