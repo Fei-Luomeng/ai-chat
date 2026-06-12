@@ -12,6 +12,49 @@
       @ 是 v-on: 的缩写，子组件 emit 对应事件后，父组件在这里接收。
     -->
     <!-- 左侧导航只展示数据并上抛操作，具体状态修改由 useChatApp 完成。 -->
+    <!--
+      下面 active-session-id 这一行可以拆成三步理解：
+
+      1. isProjectMode ? '' : xxx
+         这是三元运算符，条件为 true 时取冒号前的 ''，否则取冒号后的 xxx。
+
+      2. activeSession?.id
+         ?. 是“可选链”，可以理解为先判断 activeSession 有没有值：
+
+         - activeSession 有值：继续读取 activeSession.id。
+         - activeSession 是 null 或 undefined：停止读取，不会因为访问 id 而报错，
+           整个 activeSession?.id 表达式直接得到 undefined。
+
+         注意：如果 activeSession 对象存在，但它的 id 本身是 null 或 undefined，
+         activeSession?.id 最终同样会得到 null 或 undefined。
+
+      3. activeSession?.id ?? ''
+         ?? 是“空值合并运算符”，它会检查左侧最终得到的值：
+
+         - 左侧是正常的会话 id，例如 'session-123'：直接使用这个 id。
+         - 左侧是 null 或 undefined：使用右侧的默认值空字符串 ''。
+
+         因此 activeSession?.id ?? '' 可以理解为：
+         “如果 activeSession 存在并且能取到 id，就使用 id；否则使用空字符串。”
+
+         它大致等价于下面的普通 if/else：
+
+         let sessionId = ''
+         if (activeSession !== null && activeSession !== undefined) {
+           if (activeSession.id !== null && activeSession.id !== undefined) {
+             sessionId = activeSession.id
+           }
+         }
+
+         再加上最外层三元运算符后，完整含义是：
+         - 当前是项目模式：直接传空字符串，不读取普通会话 id。
+         - 当前不是项目模式：有 activeSession.id 就传 id，没有就传空字符串。
+
+      ?? 和 || 不完全一样：
+      0 ?? 10 得到 0，'' ?? '默认值' 得到 ''；
+      0 || 10 得到 10，'' || '默认值' 得到 '默认值'。
+      只有确实想处理 null/undefined 时，优先使用 ??。
+    -->
     <ChatSidebar
       :action-menu-style="actionMenuStyle"
       :active-project="activeProject"
@@ -51,6 +94,11 @@
       @toggle-session-pinned="toggleChatSessionPinned"
     />
 
+    <!--
+      移动端侧栏打开时显示一层覆盖主内容区的透明遮罩。
+      用户点击侧栏外部区域后把 isSidebarCollapsed 设为 true，从而关闭侧栏；
+      这是一个没有可见文字的按钮，aria-label 用于告诉读屏软件它的作用。
+    -->
     <button
       v-if="isMobileViewport && !isSidebarCollapsed"
       class="sidebar-backdrop"
@@ -60,12 +108,103 @@
     />
 
     <!--
-      主内容区按“项目首页 / 空会话 / 已有消息”三种状态切换。
+      主内容区按“项目首页 / 空会话 / 当前会话至少有一条消息”三种状态切换。
       v-if、v-else-if、v-else 必须相邻，Vue 每次只会挂载其中一个分支。
       被切走的组件会卸载，因此组件里的 onBeforeUnmount 也会执行。
     -->
     <section class="conversation">
-      <!-- 顶栏始终存在，负责当前会话工具和移动端侧栏入口。 -->
+      <!--
+        ConversationHeader 是“当前对话顶部栏”组件，文件位置：
+        src/components/chat/ConversationHeader.vue
+
+        下面以冒号 : 开头的是传给 ConversationHeader 的 props（属性）：
+        左边是子组件 ConversationHeader 声明的属性名，
+        右边是父组件 App.vue 从 useChatApp() 中取得的状态或计算结果。
+
+        下面以 @ 开头的是监听 ConversationHeader 发出的事件：
+        左边是子组件通过 emit 发出的事件名，
+        右边是 App.vue 收到事件后执行的状态修改或 useChatApp() 方法。
+
+        注意：Vue 组件开始标签的属性行末不能直接追加 HTML 注释，
+        否则会造成模板语法错误，所以在这里按代码顺序逐行解释。
+
+        props 属性逐行说明：
+
+        1. :context-cleared="Boolean(activeSession?.contextClearedAt)"
+           左边 context-cleared：
+           是 ConversationHeader 的 contextCleared 属性，子组件中类型为 boolean。
+
+           右边 activeSession：
+           来自 useChatApp()，表示当前正在查看的普通会话或项目会话。
+
+           activeSession?.contextClearedAt：
+           `?.` 是可选链。有当前会话时读取“清空上下文的时间戳”；
+           没有当前会话时不报错，而是得到 undefined。
+
+           Boolean(...)：
+           把时间戳或 undefined 转成真正的布尔值。
+           有清空时间戳时得到 true，顶栏显示“已清上下文”；
+           没有时间戳时得到 false，顶栏显示“清上下文”。
+
+        2. :has-messages="Boolean(activeSession?.messages.length)"
+           左边 has-messages 是 ConversationHeader 的 hasMessages 布尔属性。
+           右边读取当前会话的消息数量：数量大于 0 转成 true，没有会话或消息为 0 转成 false。
+           子组件根据它决定“查当前”和“导出”按钮是否可点击。
+
+        3. :is-mobile-viewport="isMobileViewport"
+           左边是子组件的 isMobileViewport 属性；
+           右边来自 useChatApp()，表示当前是否为移动端宽度。
+           子组件据此决定展开侧栏时使用 Menu 图标还是桌面端图标。
+
+        4. :is-project-mode="isProjectMode"
+           左边是子组件的 isProjectMode 属性；
+           右边来自 useChatApp() 的 computed，表示当前是否处于某个项目中。
+           true 时顶栏显示“项目 + 项目名”，false 时显示“AI Chat + 会话标题”。
+
+        5. :is-responding="isResponding"
+           左边是子组件的 isResponding 属性；
+           右边来自 useChatApp()，表示普通会话或项目会话是否正在生成回答。
+           正在生成时，顶栏的“清上下文”按钮会被禁用。
+
+        6. :project-name="activeProject"
+           左边是子组件的 projectName 字符串属性；
+           右边 activeProject 来自 useChatApp()，保存当前项目名称。
+           只有项目模式下，子组件才把它显示为顶栏标题。
+
+        7. :session-title="headerSessionTitle"
+           左边是子组件的 sessionTitle 字符串属性；
+           右边 headerSessionTitle 来自 useChatApp() 的 computed，
+           有活动会话时取会话标题，没有时使用“新的对话”。
+
+        8. :sidebar-collapsed="isSidebarCollapsed"
+           左边是子组件的 sidebarCollapsed 布尔属性；
+           右边来自 useChatApp()，表示左侧栏当前是否收起。
+           true 时 ConversationHeader 才显示“展开侧栏”按钮。
+
+        子组件事件逐行说明：
+
+        9. @clear-context="openContextClearDialog"
+           ConversationHeader 点击“清上下文”后 emit('clearContext')；
+           App.vue 收到后执行 useChatApp() 提供的 openContextClearDialog，
+           打开确认弹窗，不会在第一次点击时直接清空。
+
+        10. @import-session="importMarkdownSession"
+            子组件选择导入文件后，把原生 change 事件作为参数发给父组件；
+            App.vue 调用 useChatApp() 的 importMarkdownSession 读取并导入 Markdown 对话。
+
+        11. @open-export="openExportDialog"
+            子组件点击“导出”后通知父组件；
+            App.vue 调用 useChatApp() 的 openExportDialog 打开导出设置弹窗。
+
+        12. @open-session-search="openSessionSearch"
+            子组件点击“查当前”后通知父组件；
+            App.vue 调用 useChatApp() 的 openSessionSearch 打开当前会话搜索弹窗。
+
+        13. @open-sidebar="isSidebarCollapsed = false"
+            子组件点击展开侧栏按钮后 emit('openSidebar')；
+            App.vue 直接把 useChatApp() 返回的 isSidebarCollapsed 改成 false，
+            false 表示侧栏不再处于收起状态，因此左侧栏重新显示。
+      -->
       <ConversationHeader
         :context-cleared="Boolean(activeSession?.contextClearedAt)"
         :has-messages="Boolean(activeSession?.messages.length)"
@@ -145,8 +284,17 @@
       />
 
       <template v-else>
-        <!-- template 本身不会生成真实 DOM，只用于包住一组需要共同判断的节点。 -->
-        <!-- 已有消息时渲染消息流和底部固定输入区。 -->
+        <!--
+          进入这个 v-else，表示前面的两个条件都不成立：
+
+          1. `isProjectMode && isProjectHome` 为 false，不是在项目首页；
+          2. `isFreshSession` 为 false，不是临时新建状态，并且当前会话消息数不为 0。
+
+          因此这里更准确的含义是“已经进入一条至少包含一条消息的具体会话”，
+          页面会渲染 MessageThread 消息流，以及底部固定的模板栏和输入器。
+
+          template 本身不会生成真实 DOM，只用于把这些节点放进同一个 v-else 分支。
+        -->
         <MessageThread
           :active-message-id="activeMessageId"
           :editing-draft="editingDraft"
@@ -345,22 +493,41 @@
 </template>
 
 <script setup lang="ts">
+// ChatComposer：底部聊天输入器，负责输入文字、切换工具以及发送/停止按钮。
 import ChatComposer from '@/components/chat/ChatComposer.vue'
+// ChatSidebar：左侧导航栏，展示项目、最近会话、收藏入口和用户设置入口。
 import ChatSidebar from '@/components/chat/ChatSidebar.vue'
+// ConversationHeader：对话区域顶部栏，展示标题以及搜索、导入、导出、清除上下文等操作。
 import ConversationHeader from '@/components/chat/ConversationHeader.vue'
+// MessageThread：消息列表主体，展示用户/助手消息、思考过程、引用来源和消息操作按钮。
 import MessageThread from '@/components/chat/MessageThread.vue'
+// ProjectHome：项目首页，展示项目说明、项目内会话列表和项目专用输入区。
 import ProjectHome from '@/components/chat/ProjectHome.vue'
+// PromptTemplateBar：常用提示词快捷栏，点击模板后把预设文字填入输入框。
 import PromptTemplateBar from '@/components/chat/PromptTemplateBar.vue'
+// SearchDialogs：同时承载全局搜索和当前会话内搜索两个弹窗。
 import SearchDialogs from '@/components/chat/SearchDialogs.vue'
+// WelcomeView：没有打开具体会话时的欢迎页，组合欢迎文案、模板栏和输入器。
 import WelcomeView from '@/components/chat/WelcomeView.vue'
+
+// ActionDialog：创建、重命名、删除项目或会话时使用的通用确认弹窗。
 import ActionDialog from '@/components/dialogs/ActionDialog.vue'
+// ContextClearDialog：确认“从此处开始清除上下文”的提示弹窗。
 import ContextClearDialog from '@/components/dialogs/ContextClearDialog.vue'
+// ConversationManagerDialog：归档与回收站管理弹窗，用于恢复或彻底处理会话。
 import ConversationManagerDialog from '@/components/dialogs/ConversationManagerDialog.vue'
+// ExportDialog：选择导出全部消息或部分消息的弹窗。
 import ExportDialog from '@/components/dialogs/ExportDialog.vue'
+// FavoritesDialog：查看、搜索、跳转和取消收藏消息的弹窗。
 import FavoritesDialog from '@/components/dialogs/FavoritesDialog.vue'
+// SettingsDialog：个人资料、主题、模型参数、自定义指令和记忆设置弹窗。
 import SettingsDialog from '@/components/dialogs/SettingsDialog.vue'
+// TemplateManagerDialog：新增、编辑、删除和恢复默认提示词模板的弹窗。
 import TemplateManagerDialog from '@/components/dialogs/TemplateManagerDialog.vue'
+
+// useChatApp：应用的主逻辑入口，集中组合会话、项目、搜索、设置等状态和操作。
 import { useChatApp } from '@/composables/useChatApp'
+// useSpeechFeatures：封装消息朗读和麦克风语音输入功能。
 import { useSpeechFeatures } from '@/composables/useSpeechFeatures'
 
 // <script setup> 会在每个组件实例创建时执行一次。

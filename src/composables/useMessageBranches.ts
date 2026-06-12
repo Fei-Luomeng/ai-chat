@@ -9,6 +9,7 @@ interface BranchVariant {
 }
 
 interface BranchGroup {
+  // sourceId 是原始用户问题 id，variants 包含原问题和之后生成的所有版本。
   sourceId: string
   variants: BranchVariant[]
 }
@@ -27,6 +28,7 @@ const getTurnMessages = (messages: ChatMessage[], userIndex: number): ChatMessag
   if (!firstMessage) return []
   const turn = [firstMessage]
 
+  // 从用户消息下一项开始收集，遇到下一条用户消息就结束当前问答轮次。
   for (let index = userIndex + 1; index < messages.length; index += 1) {
     const message = messages[index]
     if (!message || message.role === 'user') break
@@ -40,6 +42,7 @@ export const useMessageBranches = (options: MessageBranchesOptions) => {
   // branchGroups 是派生状态，不单独保存；底层 messages 变化后会自动重新生成。
   const branchGroups = computed<BranchGroup[]>(() => {
     const messages = options.activeSession.value?.messages ?? []
+    // 只有没有 branchOf 的用户消息可作为分支源；分支消息不会再次成为同组根节点。
     return messages.flatMap((sourceMessage, sourceIndex) => {
       if (sourceMessage.role !== 'user' || sourceMessage.branchOf) return []
       const branchMessages = messages.filter(
@@ -71,6 +74,7 @@ export const useMessageBranches = (options: MessageBranchesOptions) => {
   const selectedBranchId = (group: BranchGroup) => {
     const selectedId = options.activeSession.value?.activeBranchIds?.[group.sourceId]
     // 未保存选择或原分支已不存在时，默认展示最新生成的版本。
+    // some 判断是否至少存在一个匹配版本；保存的 id 失效时回退到最新版本。
     return group.variants.some((variant) => variant.id === selectedId)
       ? selectedId!
       : group.variants.at(-1)?.id ?? group.sourceId
@@ -87,6 +91,7 @@ export const useMessageBranches = (options: MessageBranchesOptions) => {
     const visible: ChatMessage[] = []
 
     // 每个分支组只展开当前版本，其余普通消息保持原有顺序。
+    // 遍历原始线性顺序：遇到分支源只放入当前版本，其余隐藏版本跳过。
     messages.forEach((message) => {
       const group = branchGroupBySource.value.get(message.id)
       if (group) {
@@ -129,6 +134,7 @@ export const useMessageBranches = (options: MessageBranchesOptions) => {
     const session = options.activeSession.value
     if (!session) return
 
+    // 搜索所有组，找到包含目标消息的版本后切换为该版本。
     for (const group of branchGroups.value) {
       // 搜索命中隐藏版本时先切换分支，随后外层才能滚动到目标消息。
       const variant = group.variants.find((item) =>

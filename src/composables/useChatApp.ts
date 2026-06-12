@@ -27,6 +27,8 @@ import type { MemoryItem, ModelSettings, PromptTemplate } from '@/types/ui'
 export const useChatApp = () => {
 // 这些 interface 只在 TypeScript 编译阶段用于检查参数，打包后的浏览器代码里不存在。
 interface AppSendOptions {
+  // 不带 ? 的字段是必填字段；带 ? 的字段允许调用发送函数时省略。
+  // 省略后读取 branchLabel 得到 undefined，再由具体发送逻辑决定默认行为。
   agentMode: boolean
   branchLabel?: string
   branchOf?: string
@@ -82,6 +84,8 @@ const normalizeProjectSessions = (sessions: Record<string, ChatSession[]>) =>
   )
 
 const readAppState = (): PersistedAppState => {
+  // 参数列表后面的 `: PersistedAppState` 是函数返回值类型。
+  // 它要求 try 和 catch 的每条返回路径都必须能作为 PersistedAppState 使用。
   try {
     if (!window.localStorage) return {}
     const stored = window.localStorage.getItem(APP_STORAGE_KEY)
@@ -116,6 +120,8 @@ const storedMode =
 // ref 相当于把 Vue 2 data 中的单个字段变成独立响应式对象。
 // TypeScript 中读写用 draft.value，模板使用时会自动解包为 draft。
 const draft = ref('')
+// DOM ref 在 setup 执行时还未挂载，所以初始值是 null。
+// `<HTMLElement | null>` 同时告诉 TS：挂载后是元素，挂载前或卸载后可能为空。
 const messagesRef = ref<HTMLElement | null>(null)
 const editingMessageId = ref('')
 const editingDraft = ref('')
@@ -154,6 +160,7 @@ const highlightedMessageId = ref('')
 const hoveredNavigatorItem = ref<{ label: string; right: number; top: number } | null>(null)
 const openActionMenu = ref('')
 // Record<string, ChatSession[]> 表示键是项目名、值是该项目的会话数组。
+// 再套进 ref<...> 后，projectSessions.value 才是真正的 Record 对象。
 const projectSessions = ref<Record<string, ChatSession[]>>({})
 const projectDescriptions = ref<Record<string, string>>(storedAppState.projectDescriptions ?? {})
 const projects = ref<string[]>(storedAppState.projects ?? [])
@@ -272,6 +279,9 @@ const activeSession = computed(() =>
 const hasDraft = computed(() => draft.value.trim().length > 0)
 // 临时新建态与真正的空 session 在视觉上都使用欢迎页。
 const isFreshSession = computed(
+  // activeSession.value?.messages.length 安全读取消息数量；
+  // 没有活动会话时结果是 undefined，再由 ?? 0 回退成数字 0。
+  // 因为 ?? 不会把合法的 0 当成缺失，所以这里比 || 0 更准确地表达意图。
   () => isPendingNewSession.value || isPendingProjectSession.value || (activeSession.value?.messages.length ?? 0) === 0,
 )
 // activeProject 是项目模式成立的必要条件，防止残留 mode 产生假项目页。
@@ -448,6 +458,10 @@ const messageNavigatorItems = computed(() =>
 )
 
 const persistAppState = () => {
+  // 持久化流程：
+  // 1. 从各个 Ref 中取出当前普通值；
+  // 2. 组装成可 JSON 序列化的快照；
+  // 3. 写入 localStorage，页面刷新时再由 readAppState 恢复。
   // 项目、外观和应用导航位置共用一份快照；普通会话由 Pinia store 单独保存。
   const state: PersistedAppState = {
     activeProject: activeProject.value,
@@ -498,6 +512,7 @@ const restoreManagedConversation = (item: { projectName: string; session: ChatSe
   item.session.archivedAt = undefined
   item.session.deletedAt = undefined
   item.session.updatedAt = Date.now()
+  // projectName 非空说明对象来自项目映射；空字符串说明来自普通 Pinia 会话。
   if (item.projectName) persistAppState()
   else chatStore.restoreSession(item.session.id)
   ElMessage.success('对话已恢复')
@@ -530,10 +545,12 @@ const scrollToBottom = async () => {
   // 等待 Vue 完成消息 DOM 更新后再读取 scrollHeight。
   await nextTick()
   if (!messagesRef.value) return
+  // scrollTop 设置为完整内容高度，即滚动到容器最底部。
   messagesRef.value.scrollTop = messagesRef.value.scrollHeight
 }
 
 const updateActiveMessageFromScroll = () => {
+  // 这个函数把当前滚动位置转换成右侧导航的 activeMessageId。
   if (!messagesRef.value) return
 
   // 只查询当前渲染窗口中的用户消息。
@@ -551,6 +568,8 @@ const updateActiveMessageFromScroll = () => {
 }
 
 const jumpToMessage = async (messageId: string) => {
+  // 定位流程不是直接 scrollIntoView：
+  // 先切换到目标分支，再扩大长会话渲染窗口，等待 DOM 更新，最后才能滚动。
   // 搜索结果可能位于隐藏分支或尚未渲染的旧消息中，定位前要先把它变为可见。
   revealMessageBranch(messageId)
   const messageIndex = visibleMessages.value.findIndex((message) => message.id === messageId)
@@ -581,6 +600,8 @@ const jumpToMessage = async (messageId: string) => {
 
 const copyRenderedCode = async (event: MouseEvent) => {
   // Markdown 内容由 v-html 注入，复制按钮和缺失引用都通过事件委托处理。
+  // MouseEvent 是浏览器提供的事件类型。event.target 只被声明为 EventTarget，
+  // 但 closest 是 HTMLElement 的方法，所以先在确定来源是页面元素后做类型断言。
   const target = event.target as HTMLElement
   const missingCitation = target.closest<HTMLAnchorElement>('.citation-missing')
   if (missingCitation) {
@@ -589,12 +610,14 @@ const copyRenderedCode = async (event: MouseEvent) => {
     return
   }
 
+  // 泛型 <HTMLButtonElement> 告诉 TypeScript，匹配成功后按 button 元素提供类型提示。
   const copyButton = target.closest<HTMLButtonElement>('.code-copy')
   if (!copyButton) return
 
   const code = copyButton.parentElement?.querySelector('code')?.textContent ?? ''
   if (!code) return
 
+  // Clipboard API 返回 Promise；await 确保复制完成后再显示成功提示。
   await navigator.clipboard.writeText(code)
   ElMessage.success('已复制代码')
 }
@@ -607,6 +630,8 @@ const getMessagePlainText = (message: ChatMessage) => {
 }
 
 // ===== Export, favorites and search adapters =====
+// 以下三个 composable 都接收同一批导航 Ref 和辅助函数。
+// useChatApp 在这里充当适配层，把普通会话与项目会话整理成它们需要的统一接口。
 const {
   closeExportDialog,
   exportCurrentSession,
@@ -722,6 +747,7 @@ const getSendOptions = (): AppSendOptions => ({
   // DOM 检查兼容多个输入器实例，最终仍与响应式设置取并集。
   agentMode: isAgentMode.value || isToolButtonPressed('agent-mode'),
   deepThinking: isDeepThinking.value || isToolButtonPressed('deep-thinking'),
+  // 设置值 0 表示自动估算，因此通过 || 转成 undefined 交给请求层。
   maxTokens: modelSettings.value.maxTokens || undefined,
   // 自定义指令和显式记忆只在请求时拼接，不写入可见消息历史。
   systemPrompt: [
@@ -759,6 +785,7 @@ const clearCurrentContext = () => {
 
   // 只记录上下文截断时间，不删除页面中的历史消息。
   const now = Date.now()
+  // 后续 buildApiMessages 会排除 createdAt 早于该时间的消息。
   session.contextClearedAt = now
   session.updatedAt = now
 
@@ -812,6 +839,8 @@ const hasPreviousUserMessage = (message: ChatMessage) => {
 }
 
 const resubmitUserMessage = async (messageId: string, nextContent?: string) => {
+  // 该函数服务“重新生成”和其他重提场景：
+  // 找到原用户问题 -> 删除它及之后的历史 -> 使用原文或新文本重新发送。
   const session = activeSession.value
   if (!session || isResponding.value) return
 
@@ -826,6 +855,7 @@ const resubmitUserMessage = async (messageId: string, nextContent?: string) => {
 
   const sendOptions = getSendOptions()
   // 重试从目标问题开始重新生成，因此删除它之后的旧回答和后续对话。
+  // splice(messageIndex) 不传删除数量，表示从该位置一直删除到数组末尾。
   session.messages.splice(messageIndex)
   session.updatedAt = Date.now()
 
@@ -854,6 +884,7 @@ const cloneMessageForBranch = (message: ChatMessage): ChatMessage => ({
 })
 
 const createBranchedSession = async (sourceMessage: ChatMessage, content: string) => {
+  // 编辑旧问题不会修改原会话，而是复制分叉点之前的上下文到一个新会话。
   const parentSession = activeSession.value
   if (!parentSession || isResponding.value) return
 
@@ -903,6 +934,7 @@ const createBranchedSession = async (sourceMessage: ChatMessage, content: string
 }
 
 const branchFromAssistantMessage = async (sourceMessage: ChatMessage) => {
+  // 从助手回答创建分支时，当前回答也属于新会话历史，因此 slice 需要包含 sourceIndex。
   const parentSession = activeSession.value
   if (!parentSession || isResponding.value || sourceMessage.role !== 'assistant') return
 
@@ -963,6 +995,8 @@ const regenerateAssistantMessage = async (message: ChatMessage) => {
   if (!session || isResponding.value || message.role !== 'assistant') return
 
   const messageIndex = session.messages.findIndex((item) => item.id === message.id)
+  // 截取该回答之前的消息，倒序后找到最近的一条用户问题。
+  // 先 slice 创建副本，reverse 不会改变原会话顺序。
   const userMessage = session.messages
     .slice(0, messageIndex)
     .reverse()
@@ -974,6 +1008,8 @@ const regenerateAssistantMessage = async (message: ChatMessage) => {
 }
 
 const continueAssistantMessage = async (message: ChatMessage) => {
+  // “继续生成”与重新提问不同：
+  // 它保留原助手消息，并把新 token 直接追加到该消息末尾。
   const session = activeSession.value
   if (!session || isResponding.value || message.role !== 'assistant' || !message.truncated) return
 
@@ -988,6 +1024,8 @@ const continueAssistantMessage = async (message: ChatMessage) => {
     content: '请直接从上一条回答中断的位置继续，不要重复已经回答的内容，也不要添加“继续”等说明。',
     createdAt: Date.now(),
   }
+  // continuationPrompt 只存在于本次 API 上下文，不 push 到 session.messages，
+  // 因此页面不会显示一条“请继续”的用户消息。
   const contextMessages = [...session.messages.slice(0, messageIndex + 1), continuationPrompt]
   const sendOptions = getSendOptions()
   let nextContent = originalContent
@@ -1012,6 +1050,7 @@ const continueAssistantMessage = async (message: ChatMessage) => {
   }
 
   const appendToken = (token: string) => {
+    // 请求层每次回调一个字符/片段；这里同时更新最终 message 和流式显示缓存。
     if (!hasReceivedToken) {
       // 首个续写 token 前补段落分隔，避免与原回答最后一句粘连。
       hasReceivedToken = true
@@ -1107,6 +1146,8 @@ watch(
     void scrollToBottom().then(updateActiveMessageFromScroll)
   },
 )
+// 这里只监听 length，所以消息 content 流式变化不会每个字符都触发滚到底部；
+// 只有新增或删除消息时才执行该 watcher。
 
 // watch 的第一个参数是“要监听什么”，第二个参数是变化后的处理函数。
 // 这里使用 getter，只监听当前会话消息数量，而不是深度监听整个会话对象。
@@ -1171,6 +1212,11 @@ watch(
 )
 
 const sendProjectContent = async (content: string, sendOptions: AppSendOptions = getSendOptions()) => {
+  // 项目发送完整阶段：
+  // 1. 创建用户消息并持久化；
+  // 2. 启动请求并用回调更新流式状态；
+  // 3. 请求结束后整理正文/思考/来源；
+  // 4. 清空临时流式字段并再次持久化。
   // 项目会话没有放进全局 Pinia store，因此保留一套与普通会话对称的发送流程。
   const session = activeProjectSession.value
   const trimmedContent = content.trim()
@@ -1218,6 +1264,7 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
   let responseTruncated = false
   const ensureProjectAssistantMessage = () => {
     // 延迟创建助手消息，首个事件到来前由单独的等待状态占位。
+    // 多个回调都会调用该函数，但只在第一次创建消息，之后返回同一对象。
     if (!assistantMessage) {
       assistantMessage = {
         branchLabel: sendOptions.branchLabel,
@@ -1349,6 +1396,7 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
 
   const completedAssistantMessage = assistantMessage as ChatMessage | null
   if (completedAssistantMessage) {
+    // 这里进入“收到过流式回调”的正常路径；assistantMessage 已存在于 session.messages。
     // 流结束后统一校正正文、思考时间、来源和截断状态，再进行持久化。
     if (projectStreamingReasoningContent.value && !projectStreamingReasoningEndedAt.value) {
       projectStreamingReasoningEndedAt.value = Date.now()
@@ -1404,6 +1452,7 @@ const sendProjectContent = async (content: string, sendOptions: AppSendOptions =
     completedAssistantMessage.sources = responseSources.length ? responseSources : undefined
     completedAssistantMessage.truncated = responseTruncated || undefined
   } else if (reply) {
+    // 某些代理一次性返回完整文本，不触发 onToken，因此需要在这里补建消息。
     // 非流式兼容响应没有触发回调时，根据最终 reply 补建助手消息。
     const fallbackSplit = sendOptions.deepThinking ? splitReasoningFromAnswer(reply) : null
     const createdAt = Date.now()
@@ -1495,6 +1544,8 @@ const send = async () => {
   draft.value = ''
 
   // “新建对话”先展示空页面，真正发送时才创建持久化会话。
+  // 根据当前导航状态依次判断临时普通会话、临时项目会话、已有项目会话，
+  // 都不匹配时才交给普通 Pinia store 发送。
   if (isPendingNewSession.value) {
     chatStore.createSession()
     isPendingNewSession.value = false
@@ -1522,6 +1573,7 @@ const removeInterruptedAssistant = (session: ChatSession | undefined, streamingM
   if (!session) return
 
   const lastMessage = session.messages.at(-1)
+  // 只有完全没有正文且没有错误的助手占位才删除；已有部分内容则保留。
   const shouldRemoveAssistant = lastMessage?.role === 'assistant' && !lastMessage.content.trim() && !lastMessage.error
 
   if (shouldRemoveAssistant) {
@@ -1536,6 +1588,8 @@ const removeInterruptedAssistant = (session: ChatSession | undefined, streamingM
 }
 
 const stopResponding = () => {
+  // 停止流程既要 abort 网络，也要修正消息数据和清理 UI 临时状态。
+  // 只把 isResponding 改为 false 并不能终止仍在进行的 fetch。
   // 三种可能的请求共享同一个停止入口：普通会话、项目会话和续写。
   const session = activeSession.value
   const chatStreamingMessageId = chatStore.streamingMessageId

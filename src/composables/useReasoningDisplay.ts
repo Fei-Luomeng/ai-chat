@@ -14,6 +14,7 @@ interface ReasoningDisplayOptions {
 
 export const useReasoningDisplay = (options: ReasoningDisplayOptions) => {
   // 这里只保存用户的折叠选择，思考内容仍以消息和流式状态为准。
+  // 对象键是 messageId，值 true 表示该消息的思考区已折叠。
   const collapsedReasoning = ref<Record<string, boolean>>({})
 
   const getReasoningContent = (message: ChatMessage) => {
@@ -21,11 +22,14 @@ export const useReasoningDisplay = (options: ReasoningDisplayOptions) => {
     if (message.id === options.streamingMessageId.value) {
       return options.streamingReasoningContent.value || message.reasoningContent || ''
     }
+    // ?? 从左到右选择第一个不是 null/undefined 的值；
+    // 与 || 不同，合法的空字符串不会因为是假值而自动跳到右侧。
     return message.reasoningContent ?? splitReasoningFromAnswer(message.content)?.reasoning ?? ''
   }
 
   const getAnswerContent = (message: ChatMessage) => {
     // 有独立 reasoning 字段时正文可直接使用，否则尝试从混合文本拆分。
+    // 新消息有独立 reasoningContent；旧消息可能仍把思考和正文混在 content 中。
     if (message.reasoningContent) return stripFinalAnswerMarker(message.content)
     return stripFinalAnswerMarker(splitReasoningFromAnswer(message.content)?.answer ?? message.content)
   }
@@ -53,6 +57,7 @@ export const useReasoningDisplay = (options: ReasoningDisplayOptions) => {
       // 正在生成时用每秒刷新的 liveNow 作为临时结束时间。
       message.id === options.streamingMessageId.value && options.isResponding.value ? options.liveNow.value : 0
 
+    // 已结束使用真实 endedAt，正在生成使用持续更新的 liveEndedAt。
     if (startedAt && (endedAt || liveEndedAt)) {
       // 最短显示 1 秒，避免极快响应出现“0 秒”。
       return `${Math.max(1, Math.round(((endedAt || liveEndedAt) - startedAt) / 1000))} 秒`
@@ -70,12 +75,15 @@ export const useReasoningDisplay = (options: ReasoningDisplayOptions) => {
     return ''
   }
 
+  // 未记录的键是 undefined，undefined !== true，因此新消息默认展开。
   const isReasoningOpen = (messageId: string) => collapsedReasoning.value[messageId] !== true
 
   const toggleReasoning = (messageId: string) => {
     // Map 保存的是 collapsed 状态，因此写入切换前的 open 值。
     collapsedReasoning.value = {
+      // ...保留其他消息的折叠状态，[messageId] 只覆盖当前消息对应的动态键。
       ...collapsedReasoning.value,
+      // 当前若为展开，点击后把 collapsed 写成 true；反之写成 false。
       [messageId]: isReasoningOpen(messageId),
     }
   }

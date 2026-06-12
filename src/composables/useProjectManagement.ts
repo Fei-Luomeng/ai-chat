@@ -17,6 +17,8 @@ interface SendOptions {
 }
 
 interface ProjectManagementOptions {
+  // Options 接口把这个 composable 需要的依赖一次列全，类似 Vue 2 mixin 的依赖清单，
+  // 但 TS 会在调用处检查是否漏传、名称是否拼错、函数参数是否一致。
   // 导航状态由外层创建并注入，此模块直接修改这些 Ref。
   // 这种“状态 + 回调注入”让模块不需要 import useChatApp，也避免模块之间循环依赖。
   activeProject: Ref<string>
@@ -25,6 +27,7 @@ interface ProjectManagementOptions {
   closeMobileSidebar: () => void
   createId: () => string
   currentMode: Ref<'chat' | 'project'>
+  // 普通会话操作通过回调委托给 Pinia，项目会话则由本模块直接修改映射。
   archiveChatSession: (sessionId: string) => void
   deleteChatSession: (sessionId: string) => void
   draft: Ref<string>
@@ -50,10 +53,15 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
   // projects 没有复制数组，只是给同一个 Ref 起了一个更短的局部名称。
   const projects = options.projects
   // actionMenuStyle 使用 fixed 坐标；actionDialog 保存当前待确认操作。
+  // 样式对象的键和值都是字符串，例如 `{ left: '120px', top: '80px' }`。
+  // 使用 Record 是因为具体会出现哪些 CSS 字段不固定。
   const actionMenuStyle = ref<Record<string, string>>({})
+  // 联合类型包含 null，表示“当前没有待处理弹窗”；赋值为对象后 TS 会检查联合成员结构。
   const actionDialog = ref<ActionDialogState | null>(null)
 
   const findProjectSession = (sessionId: string) => {
+    // 没有显式写返回值时，TS 会根据两个 return 自动推断为
+    // `{ projectName: string; session: ChatSession } | undefined`。
     // 项目会话按项目名分组，操作单条会话时需要先反查所属项目。
     // projectSessions 的结构是 Record<项目名, 会话数组>，所以需要遍历每个项目查找。
     for (const projectName of Object.keys(options.projectSessions.value)) {
@@ -86,6 +94,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     options.stopResponding()
     options.draft.value = ''
     options.resetTools()
+    // 普通模式和项目模式相关字段必须成组更新，避免左侧和主区域状态不一致。
     options.currentMode.value = 'chat'
     options.activeProject.value = ''
     options.activeProjectSessionId.value = ''
@@ -104,6 +113,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     options.resetTools()
     options.currentMode.value = 'project'
     options.isProjectHome.value = true
+    // 项目首页没有具体活动会话，所以主动清空 activeProjectSessionId。
     options.activeProjectSessionId.value = ''
     options.isPendingNewSession.value = false
     options.isPendingProjectSession.value = false
@@ -122,6 +132,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     options.openActionMenu.value = ''
     options.closeMobileSidebar()
     // 会话切换完成后让消息区定位到最新内容。
+    // void 表示不等待滚动 Promise，不阻塞当前点击处理。
     void options.scrollToBottom()
   }
 
@@ -144,6 +155,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     const sendOptions = options.getSendOptions()
 
     // 从项目首页发送首条消息时创建项目会话并切换到对话视图。
+    // 先创建会话并设置活动 id，再发送，流式 token 才有正确的目标 session。
     createProjectSession(options.activeProject.value)
     options.currentMode.value = 'project'
     options.isProjectHome.value = false
@@ -154,6 +166,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
   }
 
   const toggleActionMenu = (menuId: string, event?: MouseEvent) => {
+    // 参数名后的 ? 表示调用函数时可以不传 event；因此函数内部 event 可能是 undefined。
     // 再次点击同一按钮视为关闭。
     if (options.openActionMenu.value === menuId) {
       options.openActionMenu.value = ''
@@ -161,6 +174,9 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     }
     options.openActionMenu.value = menuId
     // currentTarget 是绑定事件的按钮；target 可能是按钮内部的图标。
+    // 从左往右读：event?. 在 event 为空时直接得到 undefined；
+    // `as HTMLElement | undefined` 告诉 TS 非空时按 HTML 元素处理；
+    // 最后的 ?. 又保证没有元素时不会调用 getBoundingClientRect。
     const rect = (event?.currentTarget as HTMLElement | undefined)?.getBoundingClientRect()
     if (rect) {
       // 菜单挂在根节点上，用触发按钮的视口坐标定位。
@@ -175,6 +191,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
   }
 
   const renameProject = (projectName: string) => {
+    // value 预填当前名称，用户可直接在原文字基础上修改。
     actionDialog.value = { type: 'rename-project', projectName, value: projectName }
     options.openActionMenu.value = ''
   }
@@ -191,6 +208,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
 
   const deleteSession = (sessionId: string) => {
     // 同一删除入口兼容普通会话和项目会话。
+    // 先找普通会话，找不到再查项目；?? 只在左侧 undefined 时继续使用右侧。
     const session = options.chatSessions.find((item) => item.id === sessionId) ?? findProjectSession(sessionId)?.session
     actionDialog.value = { type: 'delete-session', sessionId, value: session?.title ?? '这个对话' }
     options.openActionMenu.value = ''
@@ -198,6 +216,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
 
   const archiveSession = (sessionId: string) => {
     // 先查项目映射，未命中才委托普通会话 Store。
+    // 项目和普通会话共用 UI 命令，但底层存储位置不同。
     const projectMatch = findProjectSession(sessionId)
     if (projectMatch) {
       projectMatch.session.archivedAt = Date.now()
@@ -233,6 +252,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
         const nextName = projects.value.includes(projectName)
           ? `${projectName} ${projects.value.filter((item) => item.startsWith(projectName)).length + 1}`
           : projectName
+        // 新项目放在数组开头，使它立即出现在侧边栏顶部。
         projects.value = [nextName, ...projects.value]
         // 新项目同时初始化会话列表和说明字段。
         options.projectSessions.value = { ...options.projectSessions.value, [nextName]: [] }
@@ -243,6 +263,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
       const nextName = dialog.value.trim()
       if (nextName && nextName !== dialog.projectName) {
         projects.value = projects.value.map((item) => (item === dialog.projectName ? nextName : item))
+        // 重命名项目本质上是把两个 Record 中旧键的数据迁移到新键。
         options.projectSessions.value = {
           ...options.projectSessions.value,
           [nextName]: options.projectSessions.value[dialog.projectName] ?? [],
@@ -303,7 +324,7 @@ export const useProjectManagement = (options: ProjectManagementOptions) => {
     actionDialog.value = null
   }
 
-  // 返回给 useChatApp 的都是页面命令和弹窗状态。
+  // 返回给 useChatApp 的都是页面命令和弹窗状态；查找辅助函数保持私有。
   return {
     actionDialog,
     archiveSession,

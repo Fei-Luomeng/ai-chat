@@ -17,7 +17,10 @@ export const usePromptTemplates = (
   initialTemplates: PromptTemplate[] | undefined,
   createId: () => string,
 ) => {
+  // draft 是 App.vue 的同一个输入框 Ref，模板模块可以直接向其中写入文本。
   // 模板列表直接持久化，编辑表单使用独立草稿避免输入时污染列表。
+  // ?? 只在 initialTemplates 为 null/undefined 时使用默认模板；
+  // 如果传入的是空数组，则尊重用户“没有模板”的状态。
   const promptTemplates = ref(initialTemplates ?? DEFAULT_TEMPLATES)
   const isTemplateManagerOpen = ref(false)
   const editingTemplateId = ref('')
@@ -34,6 +37,7 @@ export const usePromptTemplates = (
   const applyPromptTemplate = (template: PromptTemplate) => {
     // 保留用户已输入内容，模板作为下一段追加而不是覆盖。
     const currentDraft = draft.value.trim()
+    // 已有内容时用两个换行分隔；空输入框则直接放入模板正文。
     draft.value = currentDraft ? `${currentDraft}\n\n${template.prompt}` : template.prompt
   }
 
@@ -66,12 +70,14 @@ export const usePromptTemplates = (
     }
     if (editingTemplateId.value) {
       // 更新时创建新对象，确保模板条和管理列表立即刷新。
+      // map 返回新数组；三元表达式只为命中的模板创建新对象，其他项保留原引用。
       promptTemplates.value = promptTemplates.value.map((template) =>
         template.id === editingTemplateId.value ? { ...template, label, prompt } : template,
       )
       ElMessage.success('模板已更新')
     } else {
       // 新模板置顶，便于用户立即使用。
+      // 新建对象放在数组最前面，createId 保证 v-for key 唯一。
       promptTemplates.value = [{ id: `template-${createId()}`, label, prompt }, ...promptTemplates.value]
       ElMessage.success('模板已新增')
     }
@@ -81,6 +87,7 @@ export const usePromptTemplates = (
   const deletePromptTemplate = (templateId: string) => {
     // 删除正在编辑的模板后同步清空表单。
     promptTemplates.value = promptTemplates.value.filter((template) => template.id !== templateId)
+    // 正在编辑的条目被删除时同步退出编辑态，避免表单指向不存在的数据。
     if (editingTemplateId.value === templateId) resetTemplateDraft()
     ElMessage.success('模板已删除')
   }

@@ -4,6 +4,8 @@ interface GlobalInteractionsOptions {
   // Ref/ComputedRef 作为参数传入后仍保持响应式，并不是传入当前值的副本。
   // 因此本 composable 修改 options.isSidebarCollapsed.value 时，App.vue 会同步更新。
   // 关闭函数由各功能模块提供，本模块只负责决定调用顺序。
+  // unknown | null 表示内容类型不由本模块关心，但仍明确允许空状态。
+  // unknown 比 any 严格：如果本模块真要读取其属性，必须先判断类型。
   actionDialog: Ref<unknown | null>
   closeActionDialog: () => void
   closeContextClearDialog: () => void
@@ -29,6 +31,7 @@ interface GlobalInteractionsOptions {
   isSidebarCollapsed: Ref<boolean>
   isTemplateManagerOpen: Ref<boolean>
   openActionMenu: Ref<string>
+  // () => Promise<void> 表示一个无参数异步函数，调用方可以选择 await 等待完成。
   openSearch: () => Promise<void>
   send: () => Promise<void>
   sendProjectMessage: () => Promise<void>
@@ -41,6 +44,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
   let mobileMediaQuery: MediaQueryList | undefined
 
   const hasOpenDialog = () =>
+    // 使用 || 串联，只要任意一项为 true 就立即返回 true。
     // 快捷发送和自动聚焦在任意弹窗打开时都应暂停。
     options.isSearchOpen.value ||
     options.isSessionSearchOpen.value ||
@@ -67,6 +71,10 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
 
   const closeTopDialog = () => {
     // Escape 每次只关闭优先级最高的一层界面。
+    // `[Ref<boolean>, () => void]` 是元组：长度和每个位置的类型固定，
+    // 第 0 项一定是布尔 ref，第 1 项一定是关闭函数，不能互换顺序。
+    // Array<[A, B]> 表示“由这种固定两个元素的元组组成的数组”。
+    // 每一项同时保存弹窗开关 Ref 和对应关闭函数。
     const dialogs: Array<[Ref<boolean>, () => void]> = [
       [options.isSearchOpen, options.closeSearch],
       [options.isSessionSearchOpen, options.closeSessionSearch],
@@ -77,6 +85,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
       [options.isExportOpen, options.closeExportDialog],
       [options.isSettingsOpen, options.closeSettings],
     ]
+    // find 返回第一个打开项，所以数组顺序同时代表 Escape 关闭优先级。
     const openDialog = dialogs.find(([state]) => state.value)
     if (openDialog) {
       // 找到第一层后立即返回，避免一次 Escape 关闭多个弹窗。
@@ -103,6 +112,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
 
   const handleGlobalKeyDown = (event: KeyboardEvent) => {
     // Cmd/Ctrl+K 搜索、Cmd/Ctrl+Enter 发送、/ 聚焦输入框。
+    // macOS 使用 Command(metaKey)，Windows/Linux 通常使用 Ctrl(ctrlKey)。
     const isModKey = event.metaKey || event.ctrlKey
     if (isModKey && event.key.toLowerCase() === 'k') {
       // 覆盖浏览器默认搜索，打开应用全局搜索。
@@ -118,6 +128,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
       else void options.send()
     } else if (
       event.key === '/' &&
+      // closest 判断焦点是否位于输入控件内，防止正常输入“/”被快捷键拦截。
       !(event.target as HTMLElement | null)?.closest(
         'input, textarea, [contenteditable="true"], .el-input, .el-textarea',
       )
@@ -132,6 +143,7 @@ export const useGlobalInteractions = (options: GlobalInteractionsOptions) => {
     // 使用捕获阶段，使点击外部关闭不受子组件 stopPropagation 影响。
     const target = event.target as HTMLElement | null
     if (!target) return
+    // closest 找不到弹窗容器说明点击发生在弹窗外部。
     if (options.actionDialog.value && !target.closest('.confirm-dialog')) options.closeActionDialog()
     // 设置弹窗允许点击遮罩关闭，其他弹窗主要由自身遮罩事件处理。
     if (options.isSettingsOpen.value && !target.closest('.settings-dialog')) options.closeSettings()

@@ -4,6 +4,7 @@ import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 import type { ChatMessage } from '@/stores/chat'
 
 type SpeechPlaybackState = 'idle' | 'paused' | 'speaking'
+// 这是字符串字面量联合类型：变量只能保存三个指定字符串之一，不能随便传入其他 string。
 
 // SpeechRecognition 尚未稳定进入 TypeScript DOM 类型，并且 Chromium 仍可能只暴露 webkit 前缀。
 interface SpeechRecognitionAlternativeLike {
@@ -11,6 +12,9 @@ interface SpeechRecognitionAlternativeLike {
 }
 
 interface SpeechRecognitionResultLike {
+  // 语音识别结果是“类数组”结构，因此用数字索引签名描述 result[0]。
+  // `[index: number]: SpeechRecognitionAlternativeLike` 表示：
+  // 使用任意数字下标读取该对象时，得到的值都应符合 SpeechRecognitionAlternativeLike。
   [index: number]: SpeechRecognitionAlternativeLike
   isFinal: boolean
   length: number
@@ -29,10 +33,12 @@ interface SpeechRecognitionErrorEventLike extends Event {
 }
 
 interface SpeechRecognitionLike {
+  // 这里只声明项目实际使用的浏览器 API 字段，不需要完整复制浏览器规范。
   continuous: boolean
   interimResults: boolean
   lang: string
   maxAlternatives: number
+  // `() => void` 表示“无参数、无业务返回值的函数”；再和 null 联合，表示事件处理器也可以未设置。
   onend: (() => void) | null
   onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null
   onresult: ((event: SpeechRecognitionEventLike) => void) | null
@@ -43,20 +49,27 @@ interface SpeechRecognitionLike {
 }
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+// `new () => T` 描述“可以用 new 调用的构造器”，new 之后会得到 T 类型实例。
+// 因此后面拿到 Recognition 后，`new Recognition()` 的结果会被推断为 SpeechRecognitionLike。
 
 type SpeechWindow = Window & {
   // 交叉类型表示“普通 Window 再额外拥有这两个可选字段”。
+  // 联合类型 A | B 是“二选一”，交叉类型 A & B 则是“同时拥有两边的能力”。
   SpeechRecognition?: SpeechRecognitionConstructor
   webkitSpeechRecognition?: SpeechRecognitionConstructor
 }
 
 interface UseSpeechFeaturesOptions {
+  // Ref<string> 是 Vue 的泛型类型。尖括号中的 string 表示 `.value` 内保存的是字符串。
+  // 把 Ref 本身传进 composable，里面修改 draft.value 时，调用它的组件也会同步看到变化。
   draft: Ref<string>
+  // 这是函数类型：调用时必须传入 ChatMessage，返回值必须是 string。
   getMessageText: (message: ChatMessage) => string
 }
 
 const normalizeSpeechText = (content: string) =>
   // 朗读前去掉 Markdown 语法和引用编号，避免把星号、链接等符号读出来。
+  // 每个 replace 依次删除一种 Markdown 标记，最后压缩空白并去除首尾空格。
   content
     .replace(/```[\s\S]*?```/g, '代码块。')
     .replace(/`([^`]+)`/g, '$1')
@@ -74,6 +87,8 @@ const normalizeSpeechText = (content: string) =>
 
 export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
   // 朗读和语音输入是两套独立浏览器 API，可以同时判断支持情况。
+  // `ref<SpeechPlaybackState>` 中的 `<...>` 是泛型参数，明确限制该 ref 以后能保存哪些值。
+  // 如果只写 ref('idle')，TS 可能把它理解成较宽的 string，无法完整表达三个合法状态。
   const speechPlaybackState = ref<SpeechPlaybackState>('idle')
   const spokenMessageId = ref('')
   const isListening = ref(false)
@@ -92,6 +107,8 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
   )
 
   // 这些变量不参与模板渲染，所以不需要 ref；普通 let 足够保存浏览器 API 实例。
+  // 变量初始化时还没有识别实例，所以类型写成 `SpeechRecognitionLike | null`。
+  // 使用 recognition 的属性前要排除 null；上面的 if (!recognition) 就是在做类型收窄。
   let recognition: SpeechRecognitionLike | null = null
   // 开始识别时记录已有草稿，临时转写始终追加在该基线之后。
   let recognitionBaseDraft = ''
@@ -105,6 +122,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
   }
 
   const stopSpeaking = () => {
+    // cancel 会清空浏览器当前朗读和排队中的所有 utterance。
     if (!speechSynthesisSupported.value) return
     window.speechSynthesis.cancel()
     resetSpeechPlayback()
@@ -117,6 +135,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
     }
 
     // 点击当前消息在暂停/继续之间切换；点击其他消息则开始新的朗读。
+    // 同一消息再次点击不重新创建任务，而是在 speaking/paused 间切换。
     if (spokenMessageId.value === message.id) {
       if (speechPlaybackState.value === 'speaking') {
         window.speechSynthesis.pause()
@@ -134,6 +153,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
     const content = normalizeSpeechText(options.getMessageText(message))
     if (!content) return
 
+    // 开始新消息前先停止旧任务，保证同时只有一条消息朗读。
     stopSpeaking()
     // SpeechSynthesisUtterance 表示一次朗读任务，事件回调用于同步页面按钮状态。
     const utterance = new SpeechSynthesisUtterance(content)
@@ -144,6 +164,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
     utterance.voice =
       window.speechSynthesis.getVoices().find((voice) => voice.lang.toLowerCase().startsWith('zh')) ??
       null
+    // 浏览器回调可能晚于 speak 调用，因此回调里再次同步准确状态。
     utterance.onstart = () => {
       spokenMessageId.value = message.id
       speechPlaybackState.value = 'speaking'
@@ -184,6 +205,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
     } catch {
       recognition.abort()
     }
+    // 清空实例引用，后续 onend 回调不会再把它当作当前识别任务。
     recognition = null
     isListening.value = false
   }
@@ -196,6 +218,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
 
     // ?? 只在左侧为 null/undefined 时使用右侧，优先选择标准 API，再兼容 webkit 前缀。
     const Recognition =
+      // `as SpeechWindow` 只扩充 TypeScript 对 window 的认识，不会真的给浏览器添加这些属性。
       (window as SpeechWindow).SpeechRecognition ??
       (window as SpeechWindow).webkitSpeechRecognition
     if (!Recognition) {
@@ -203,6 +226,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
       return
     }
 
+    // 保存识别开始前的文本，之后每次临时结果都基于它整体覆盖。
     recognitionBaseDraft = options.draft.value.trimEnd()
     const nextRecognition = new Recognition()
     recognition = nextRecognition
@@ -239,6 +263,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
             : '语音识别失败，请稍后重试'
       ElMessage.error(message)
     }
+    // 只有当前任务仍是 nextRecognition 时才清空，防止旧任务回调干扰新任务。
     nextRecognition.onend = () => {
       if (recognition === nextRecognition) recognition = null
       isListening.value = false
@@ -266,6 +291,7 @@ export const useSpeechFeatures = (options: UseSpeechFeaturesOptions) => {
     if (isListening.value && previousValue && !value) stopVoiceInput()
   })
 
+  // 浏览器实例和内部基线不暴露给组件，只返回模板需要的状态和控制函数。
   return {
     isListening,
     speechPlaybackState,

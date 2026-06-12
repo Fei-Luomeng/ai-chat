@@ -31,7 +31,9 @@ export const useFavorites = (options: FavoritesOptions) => {
   const favoriteSearchText = ref('')
   const favoriteScope = ref('all')
 
+  // 收藏结果不单独存储，始终从消息上的 favorited 字段实时计算，避免两份数据不同步。
   const favoriteResults = computed<FavoriteResult[]>(() => [
+    // 数组前的 ... 是展开运算符，把多个结果数组的元素合并到同一个新数组。
     // 普通会话收藏不带 projectName。
     ...options.chatSessions
       .filter((session) => !session.archivedAt && !session.deletedAt)
@@ -62,15 +64,20 @@ export const useFavorites = (options: FavoritesOptions) => {
     { label: '全部收藏', value: 'all' },
     { label: '普通对话', value: 'chat' },
     // 项目筛选项根据现有收藏动态生成，不额外维护一份项目列表。
+    // Set 会自动去重；Array.from 再把 Set 转回可使用 sort/map 的普通数组。
+    // filter(Boolean) 去掉 undefined，但 TypeScript 不总能据此自动缩小元素类型。
     ...Array.from(new Set(favoriteResults.value.map((favorite) => favorite.projectName).filter(Boolean)))
       .sort((left, right) => left!.localeCompare(right!, 'zh-CN'))
       .map((projectName) => ({ label: projectName!, value: `project:${projectName}` })),
   ])
+  // left! 和 projectName! 中的 ! 是非空断言，表示开发者确认这里不是 null/undefined。
+  // 它只影响类型检查，不会生成运行时代码，所以前面必须确实已经过滤掉空值。
 
   const filteredFavoriteResults = computed(() => {
     // 范围和关键词两个条件同时满足才展示。
     const keyword = favoriteSearchText.value.trim().toLowerCase()
     return favoriteResults.value.filter((favorite) => {
+      // 范围条件和关键词条件必须同时成立。
       const matchesScope =
         favoriteScope.value === 'all' ||
         (favoriteScope.value === 'chat' && !favorite.projectName) ||
@@ -88,6 +95,7 @@ export const useFavorites = (options: FavoritesOptions) => {
     message.favorited = !message.favorited
     const session = options.activeSession.value
     if (session) session.updatedAt = Date.now()
+    // 根据消息来源选择正确的 localStorage 数据入口。
     if (options.isProjectMode.value) options.persistAppState()
     else options.persistChatSessions()
     ElMessage.success(message.favorited ? '已收藏回答' : '已取消收藏')
@@ -110,6 +118,7 @@ export const useFavorites = (options: FavoritesOptions) => {
     options.isPendingNewSession.value = false
     options.isPendingProjectSession.value = false
     options.closeMobileSidebar()
+    // jumpToMessage 还会处理隐藏分支和长消息窗口，所以这里不直接查询 DOM。
     await options.jumpToMessage(favorite.message.id)
   }
 
